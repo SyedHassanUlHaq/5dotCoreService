@@ -19,7 +19,7 @@ async def lifespan(_app: FastAPI):
     print("[*] Core service shutdown")
 
 
-app = FastAPI(title="fAIk Core API", version="1.0", lifespan=lifespan)
+app = FastAPI(title="5dot Core API", version="1.0", lifespan=lifespan)
 
 app.add_middleware(SessionMiddleware, secret_key=os.getenv("SESSION_SECRET_KEY", "super-secret-key"))
 app.add_middleware(
@@ -54,4 +54,4 @@ app.include_router(payments.router,      prefix="/v1",              tags=["Payme
 
 @app.get("/")
 def root():
-    return {"message": "fAIk Core API running", "version": app.version}
+    return {"message": "5dot Core API running", "version": app.version}

@@ -141,7 +141,7 @@ def check_root_endpoint():
     client = TestClient(main.app)
     resp = client.get("/")
     assert resp.status_code == 200, resp.text
-    assert resp.json()["message"] == "fAIk Core API running"
+    assert resp.json()["message"] == "5dot Core API running"
 
 
 def check_auth_error_handling():
