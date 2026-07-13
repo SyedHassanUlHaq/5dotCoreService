@@ -8,15 +8,6 @@ Scan lifecycle endpoints:
   DELETE /scans/{id}          delete scan
   POST   /scans/{id}/forensic-pdf
   GET    /scans/{id}/forensic-pdf/status
-
-This router owns scan bookkeeping only (upload, quota, DB rows, status
-polling). It never runs AI inference itself — it hands each scan off to the
-Celery worker that owns that model, by task name, so it has no import-time
-dependency on video_ai_service or ai_models_service:
-  scanType "video"  -> tasks.process_video_scan   (video_ai_service)
-  scanType "tamper" -> tasks.process_tamper_scan  (ai_models_service)
-  scanType "audio"  -> tasks.process_audio_scan   (ai_models_service)
-All three Celery apps share the same Redis broker/backend (REDIS_URL).
 """
 
 import os
@@ -24,10 +15,9 @@ import tempfile
 import uuid
 from datetime import datetime, timezone, timedelta
 
-from fastapi import APIRouter, Depends, UploadFile, File, Form, Query
+from fastapi import APIRouter, BackgroundTasks, Depends, UploadFile, File, Form, Query
 from sqlalchemy.orm import Session
 
-from celery_app import celery_app
 from config.project_config import PLAN_SCAN_LIMITS
 from database import get_db
 from models.scan import Scan
@@ -36,24 +26,12 @@ from schemas.scans import UrlScanRequest
 from utils.deps import get_current_user
 from utils.errors import AppError
 from utils.s3 import upload_file, delete_file, presigned_url
+from utils.sqs import enqueue_scan
 
 router = APIRouter()
 
 ALLOWED_EXTENSIONS = {".mp4", ".mov", ".wav", ".m4a", ".mp3", ".opus"}
 MAX_FILE_BYTES = 250 * 1024 * 1024  # 250 MB
-
-# Maps scanType -> the Celery task name registered by the service that owns
-# that AI model (see video_ai_service/tasks/video_scan_task.py and
-# ai_models_service/tasks/{tamper,audio}_scan_task.py).
-_SCAN_TASK_NAMES = {
-    "video": "tasks.process_video_scan",
-    "tamper": "tasks.process_tamper_scan",
-    "audio": "tasks.process_audio_scan",
-}
-
-
-def _dispatch_scan(scan_id: str, scan_type: str) -> None:
-    celery_app.send_task(_SCAN_TASK_NAMES[scan_type], args=[scan_id])
 
 
 # ---------------------------------------------------------------------------
@@ -177,7 +155,7 @@ async def upload_scan(
     finally:
         os.remove(tmp_path)
 
-    _dispatch_scan(str(scan.id), scanType)
+    enqueue_scan(str(scan.id), scanType, s3_key=s3_key)
 
     return {
         "scanId": _scan_id(scan),
@@ -209,7 +187,7 @@ def submit_url_scan(
     db.commit()
     db.refresh(scan)
 
-    _dispatch_scan(str(scan.id), payload.scanType)
+    enqueue_scan(str(scan.id), payload.scanType, url_source=payload.url)
 
     return {
         "scanId": _scan_id(scan),
@@ -328,6 +306,7 @@ def delete_scan(
 @router.post("/{scan_id}/forensic-pdf", status_code=202)
 def generate_forensic_pdf(
     scan_id: str,
+    background_tasks: BackgroundTasks,
     current_user: User = Depends(get_current_user),
     db: Session = Depends(get_db),
 ):
@@ -339,10 +318,9 @@ def generate_forensic_pdf(
         raise AppError("VALIDATION_ERROR", "Scan is not yet complete.", 422)
 
     from tasks.pdf_task import generate_pdf
-    job = generate_pdf.delay(str(scan.id))
+    background_tasks.add_task(generate_pdf, str(scan.id))
 
     return {
-        "jobId": f"pdf_{job.id}",
         "status": "generating",
         "estimatedSeconds": 8,
     }

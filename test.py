@@ -9,7 +9,7 @@ do for `uvicorn main:app`):
 
 Checks are split into two tiers:
   - HARD checks: pure code/wiring correctness (imports, route mounting,
-    Celery task registration/dispatch names, JWT error handling). No
+    JWT error handling). No
     network/GPU/live DB required — these must pass.
   - SOFT checks: anything that touches the outside world (a live
     DATABASE_URL, STRIPE_SECRET_KEY). These are reported but don't fail the
@@ -49,7 +49,7 @@ def _run(label: str, fn, hard: bool = True):
 
 def check_config_imports():
     from config.project_config import (  # noqa: F401
-        DATABASE_URL, SECRET_KEY, ALGORITHM, REDIS_URL,
+        DATABASE_URL, SECRET_KEY, ALGORITHM,
         MODEL_VERSION, PLAN_SCAN_LIMITS, STRIPE_SECRET_KEY,
     )
 
@@ -125,28 +125,6 @@ def check_fastapi_app_builds():
     assert not missing, f"missing routes: {missing}"
 
 
-def check_celery_task_registration():
-    from celery_app import celery_app
-    import tasks.pdf_task  # noqa: F401
-    assert "tasks.pdf_task.generate_pdf" in celery_app.tasks
-
-
-def check_scan_dispatch_task_names():
-    """
-    api/scans.py never imports AI code directly — it only dispatches to the
-    Celery task names owned by video_ai_service / ai_models_service. Pin the
-    mapping so a typo here (which would silently no-op a scan type in
-    production, since Celery just drops sends to unknown task names) fails
-    loudly in this smoke test instead.
-    """
-    from api.scans import _SCAN_TASK_NAMES
-    assert _SCAN_TASK_NAMES == {
-        "video": "tasks.process_video_scan",
-        "tamper": "tasks.process_tamper_scan",
-        "audio": "tasks.process_audio_scan",
-    }
-
-
 def check_plans_endpoint():
     from fastapi.testclient import TestClient
     import main
@@ -213,8 +191,6 @@ def main_test() -> int:
     _run("utils (errors, s3, push, deps, jwt, security, otp_store, email) import", check_utils_import)
     _run("api routers import", check_api_routers_import)
     _run("FastAPI app builds + routes mounted", check_fastapi_app_builds)
-    _run("Celery pdf_task registers", check_celery_task_registration)
-    _run("scan dispatch task names pinned", check_scan_dispatch_task_names)
     _run("GET /v1/plans", check_plans_endpoint)
     _run("GET /", check_root_endpoint)
     _run("GET /v1/users/me with bad JWT -> 401 AppError shape", check_auth_error_handling)

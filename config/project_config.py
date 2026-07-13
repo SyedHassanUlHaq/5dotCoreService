@@ -35,9 +35,6 @@ AWS_REGION = os.getenv("AWS_REGION", "us-east-1")
 AWS_BUCKET_NAME = os.getenv("AWS_BUCKET_NAME", "faik-storage")
 CDN_BASE_URL = os.getenv("CDN_BASE_URL", "")  # optional CloudFront domain
 
-# --- Redis / Celery ---
-REDIS_URL = os.getenv("REDIS_URL", "redis://localhost:6379/0")
-
 # --- Stripe ---
 STRIPE_SECRET_KEY = os.getenv("STRIPE_SECRET_KEY")
 STRIPE_WEBHOOK_SECRET = os.getenv("STRIPE_WEBHOOK_SECRET")

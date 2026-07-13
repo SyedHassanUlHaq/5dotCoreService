@@ -1,5 +1,5 @@
 """
-Celery task that generates a forensic PDF report for a completed scan.
+Generates a forensic PDF report for a completed scan.
 Requires: reportlab  (pip install reportlab)
 """
 
@@ -9,7 +9,6 @@ import tempfile
 import uuid
 from datetime import datetime, timezone
 
-from celery_app import celery_app
 from database import SessionLocal
 from models.scan import Scan
 from utils.s3 import upload_bytes, presigned_url, download_file
@@ -482,11 +481,10 @@ def _get_model_version() -> str:
 
 
 # ---------------------------------------------------------------------------
-# Celery task
+# PDF task — called via FastAPI BackgroundTasks
 # ---------------------------------------------------------------------------
 
-@celery_app.task(bind=True)
-def generate_pdf(self, scan_id: str):
+def generate_pdf(scan_id: str):
     db = SessionLocal()
     try:
         scan = db.query(Scan).filter(Scan.id == uuid.UUID(scan_id)).first()
