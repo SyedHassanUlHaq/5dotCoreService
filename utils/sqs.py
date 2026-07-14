@@ -13,23 +13,18 @@ def _client():
     return _sqs
 
 
-QUEUE_URLS = {
-    "video":  os.environ.get("SQS_URL_VIDEO", ""),
-    "tamper": os.environ.get("SQS_URL_LIPSYNC", ""),
-    "audio":  os.environ.get("SQS_URL_AUDIO", ""),
-}
+QUEUE_URL = os.environ.get("SQS_URL", "")
 
 
-def enqueue_scan(scan_id: str, scan_type: str, s3_key: str | None = None, url_source: str | None = None) -> str:
-    queue_url = QUEUE_URLS.get(scan_type)
-    if not queue_url:
-        raise ValueError(f"No SQS queue configured for scan_type '{scan_type}'")
+def enqueue_scan(request_id: str, detection_type: str, s3_key: str | None = None, url_source: str | None = None) -> str:
+    if not QUEUE_URL:
+        raise ValueError("SQS_URL is not configured")
 
-    body: dict = {"scan_id": scan_id, "scan_type": scan_type}
+    body: dict = {"request_id": request_id, "detection_type": detection_type}
     if s3_key:
         body["s3_key"] = s3_key
     if url_source:
         body["url_source"] = url_source
 
-    response = _client().send_message(QueueUrl=queue_url, MessageBody=json.dumps(body))
+    response = _client().send_message(QueueUrl=QUEUE_URL, MessageBody=json.dumps(body))
     return response["MessageId"]

@@ -10,7 +10,7 @@ import uuid
 from datetime import datetime, timezone
 
 from database import SessionLocal
-from models.scan import Scan
+from models.detection_request import Scan
 from utils.s3 import upload_bytes, presigned_url, download_file
 from utils.push import send_push
 

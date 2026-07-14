@@ -9,7 +9,7 @@ class Feedback(Base):
     __tablename__ = "feedback"
 
     id = Column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
-    scan_id = Column(UUID(as_uuid=True), ForeignKey("scans.id", ondelete="CASCADE"), nullable=False)
+    scan_id = Column(UUID(as_uuid=True), ForeignKey("detection_requests.id", ondelete="CASCADE"), nullable=False)
     user_id = Column(Integer, ForeignKey("users.id", ondelete="CASCADE"), nullable=False)
     correct_verdict = Column(String, nullable=False)   # authentic | ai | unsure
     reasons = Column(JSONB, nullable=True)             # string[]
@@ -17,5 +17,5 @@ class Feedback(Base):
     allow_anonymized_copy = Column(Boolean, default=False, nullable=False)
     created_at = Column(DateTime(timezone=True), server_default=func.now())
 
-    scan = relationship("Scan", back_populates="feedback")
+    scan = relationship("DetectionRequest", back_populates="feedback")
     user = relationship("User", back_populates="feedback")
