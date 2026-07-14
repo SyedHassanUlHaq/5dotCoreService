@@ -26,6 +26,9 @@ def _user_response(user: User) -> dict:
         "id": f"usr_{user.id}",
         "email": user.email,
         "name": display_name,
+        "firstName": user.first_name,
+        "lastName": user.last_name,
+        "phoneNumber": user.phone_number,
         "avatarInitials": initials,
         "avatarColor": user.avatar_color or "#E91E8C",
         "plan": user.plan,
@@ -55,6 +58,12 @@ def update_me(
         current_user.avatar_color = payload.avatarColor
     if payload.pushToken is not None:
         current_user.push_token = payload.pushToken
+    if payload.firstName is not None:
+        current_user.first_name = payload.firstName
+    if payload.lastName is not None:
+        current_user.last_name = payload.lastName
+    if payload.phoneNumber is not None:
+        current_user.phone_number = payload.phoneNumber
     db.commit()
     db.refresh(current_user)
     return _user_response(current_user)

@@ -4,6 +4,9 @@ from pydantic import BaseModel, EmailStr
 class SignUpRequest(BaseModel):
     email: EmailStr
     password: str
+    firstName: str
+    lastName: str
+    phoneNumber: str | None = None
 
 
 class SignInRequest(BaseModel):

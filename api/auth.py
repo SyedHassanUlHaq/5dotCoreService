@@ -49,6 +49,9 @@ def _user_response(user: User) -> dict:
         "id": f"usr_{user.id}",
         "email": user.email,
         "name": display_name,
+        "firstName": user.first_name,
+        "lastName": user.last_name,
+        "phoneNumber": user.phone_number,
         "avatarInitials": initials,
         "avatarColor": user.avatar_color or "#E91E8C",
         "plan": user.plan,
@@ -106,6 +109,9 @@ def signup(payload: SignUpRequest, db: Session = Depends(get_db)):
     user = User(
         email=payload.email,
         hashed_password=hash_password(payload.password),
+        first_name=payload.firstName,
+        last_name=payload.lastName,
+        phone_number=payload.phoneNumber,
     )
     db.add(user)
     db.commit()
