@@ -4,7 +4,7 @@ from sqlalchemy.orm import Session
 
 from database import get_db
 from models.feedback import Feedback
-from models.scan import Scan
+from models.detection_request import DetectionRequest
 from models.user import User
 from schemas.feedback import FeedbackRequest
 from utils.deps import get_current_user
@@ -28,7 +28,7 @@ def submit_feedback(
     except ValueError:
         raise AppError("SCAN_NOT_FOUND", "Invalid scan ID.", 404)
 
-    scan = db.query(Scan).filter(Scan.id == scan_uuid, Scan.user_id == current_user.id).first()
+    scan = db.query(DetectionRequest).filter(DetectionRequest.id == scan_uuid, DetectionRequest.user_id == current_user.id).first()
     if not scan:
         raise AppError("SCAN_NOT_FOUND", f"No scan with id {payload.scanId} was found.", 404)
 

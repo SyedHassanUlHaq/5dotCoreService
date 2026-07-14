@@ -22,7 +22,7 @@ class User(Base):
 
     payments = relationship("Payment", back_populates="user")
     refresh_tokens = relationship("RefreshToken", back_populates="user", cascade="all, delete-orphan")
-    scans = relationship("Scan", back_populates="user", cascade="all, delete-orphan")
+    scans = relationship("DetectionRequest", back_populates="user", cascade="all, delete-orphan")
     feedback = relationship("Feedback", back_populates="user", cascade="all, delete-orphan")
     subscription = relationship("Subscription", back_populates="user", uselist=False, cascade="all, delete-orphan")
     notifications = relationship("Notification", back_populates="user", cascade="all, delete-orphan")

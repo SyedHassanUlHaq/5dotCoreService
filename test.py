@@ -20,6 +20,8 @@ Checks are split into two tiers:
 import sys
 import traceback
 
+from api import detection_request
+
 
 PASS = "[PASS]"
 FAIL = "[FAIL]"
@@ -89,10 +91,10 @@ def check_utils_import():
 
 
 def check_api_routers_import():
-    from api import auth, users, feedback, plans, scans, stats, subscriptions, webhooks, payments
+    from api import auth, users, feedback, plans, stats, subscriptions, webhooks, payments
     for name, mod in {
         "auth": auth, "users": users, "feedback": feedback, "plans": plans,
-        "scans": scans, "stats": stats, "subscriptions": subscriptions,
+        "scans": detection_request, "stats": stats, "subscriptions": subscriptions,
         "webhooks": webhooks, "payments": payments,
     }.items():
         assert hasattr(mod, "router"), f"api.{name} has no `router`"

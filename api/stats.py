@@ -6,7 +6,7 @@ from sqlalchemy.orm import Session
 
 from config.project_config import MODEL_VERSION
 from database import get_db
-from models.scan import Scan
+from models.detection_request import DetectionRequest
 from models.user import User
 from utils.deps import get_current_user
 
@@ -31,22 +31,22 @@ def weekly_stats(
     prev_week_start = week_start - timedelta(days=7)
 
     user_scans = (
-        db.query(Scan)
-        .filter(Scan.user_id == current_user.id, Scan.status == "complete")
+        db.query(DetectionRequest)
+        .filter(DetectionRequest.user_id == current_user.id, DetectionRequest.status == "complete")
     )
 
     # Current week scans
-    this_week = user_scans.filter(Scan.created_at >= week_start).all()
+    this_week = user_scans.filter(DetectionRequest.created_at >= week_start).all()
 
     # Previous week scans count for delta
     prev_week_count = (
         user_scans
-        .filter(Scan.created_at >= prev_week_start, Scan.created_at < week_start)
+        .filter(DetectionRequest.created_at >= prev_week_start, DetectionRequest.created_at < week_start)
         .count()
     )
 
     total_scans = user_scans.count()
-    flagged = user_scans.filter(Scan.verdict == "ai").count()
+    flagged = user_scans.filter(DetectionRequest.verdict == "ai").count()
 
     # Daily breakdown Mon–Sun of current week
     day_names = ["Mon", "Tue", "Wed", "Thu", "Fri", "Sat", "Sun"]
