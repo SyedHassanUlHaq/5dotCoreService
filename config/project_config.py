@@ -54,6 +54,9 @@ GOOGLE_PLAY_SERVICE_ACCOUNT_JSON_PATH = os.getenv("GOOGLE_PLAY_SERVICE_ACCOUNT_J
 GOOGLE_PLAY_PRODUCT_PRO = os.getenv("GOOGLE_PLAY_PRODUCT_PRO")
 GOOGLE_PLAY_PRODUCT_TEAM = os.getenv("GOOGLE_PLAY_PRODUCT_TEAM")
 
+# --- YouTube Data API (trending feed enrichment) ---
+YOUTUBE_API_KEY = os.getenv("YOUTUBE_API_KEY")
+
 # --- Model metadata (surfaced in user/stats responses) ---
 MODEL_VERSION = os.getenv("MODEL_VERSION", "v3.2")
 
