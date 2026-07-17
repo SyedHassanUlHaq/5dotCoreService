@@ -7,14 +7,15 @@ import os
 import subprocess
 import tempfile
 import uuid
-from datetime import datetime, timezone
+from datetime import datetime, timezone, timedelta
 from urllib.parse import urlparse
 
+import requests
 import yt_dlp
-from fastapi import APIRouter, BackgroundTasks, Depends, UploadFile, File, Form
+from fastapi import APIRouter, BackgroundTasks, Depends, UploadFile, File, Form, Query
 from sqlalchemy.orm import Session
 
-from config.project_config import PLAN_SCAN_LIMITS
+from config.project_config import PLAN_SCAN_LIMITS, YOUTUBE_API_KEY
 from database import SessionLocal, get_db
 from models.detection_request import DetectionRequest
 from models.user import User
@@ -343,3 +344,134 @@ def list_pending_requests(
             for dr in rows
         ],
     }
+
+
+# ---------------------------------------------------------------------------
+# Trending — real trending deepfake/AI-generated videos pulled directly from
+# YouTube, independent of whether anyone has scanned them here. If we happen
+# to already have our own completed detection request for the same video,
+# its result is attached if available; otherwise those fields are null and
+# the app shows a neutral "Trending" badge instead of a fabricated AI score.
+# ---------------------------------------------------------------------------
+
+YOUTUBE_TRENDING_QUERY = 'deepfake OR "AI generated" OR "AI fake"'
+TRENDING_CACHE_TTL_SECONDS = 60 * 60  # 1 hour — search.list is expensive on quota (100 units/call)
+_trending_cache: dict = {"data": None, "expires_at": 0.0}
+
+
+def _search_trending_youtube_videos(limit: int) -> list[dict]:
+    """Query YouTube directly for recently popular deepfake/AI-generated videos."""
+    if not YOUTUBE_API_KEY:
+        return []
+    try:
+        published_after = (datetime.now(timezone.utc) - timedelta(days=14)).strftime("%Y-%m-%dT%H:%M:%SZ")
+        search_resp = requests.get(
+            "https://www.googleapis.com/youtube/v3/search",
+            params={
+                "part": "snippet",
+                "q": YOUTUBE_TRENDING_QUERY,
+                "type": "video",
+                "order": "viewCount",
+                "publishedAfter": published_after,
+                "maxResults": limit,
+                "key": YOUTUBE_API_KEY,
+            },
+            timeout=5,
+        )
+        search_items = search_resp.json().get("items") or []
+        video_ids = [it["id"]["videoId"] for it in search_items if it.get("id", {}).get("videoId")]
+        if not video_ids:
+            return []
+
+        stats_resp = requests.get(
+            "https://www.googleapis.com/youtube/v3/videos",
+            params={"part": "statistics", "id": ",".join(video_ids), "key": YOUTUBE_API_KEY},
+            timeout=5,
+        )
+        stats_by_id = {
+            item["id"]: item.get("statistics", {})
+            for item in (stats_resp.json().get("items") or [])
+        }
+
+        results = []
+        for it in search_items:
+            video_id = it.get("id", {}).get("videoId")
+            if not video_id:
+                continue
+            snippet = it["snippet"]
+            stats = stats_by_id.get(video_id, {})
+            thumbnails = snippet.get("thumbnails", {})
+            thumbnail = thumbnails.get("high") or thumbnails.get("medium") or thumbnails.get("default") or {}
+            results.append({
+                "videoId": video_id,
+                "url": f"https://www.youtube.com/watch?v={video_id}",
+                "title": snippet.get("title"),
+                "channelTitle": snippet.get("channelTitle"),
+                "thumbnailUrl": thumbnail.get("url"),
+                "viewCount": int(stats["viewCount"]) if "viewCount" in stats else None,
+                "likeCount": int(stats["likeCount"]) if "likeCount" in stats else None,
+            })
+        return results
+    except Exception:
+        return []
+
+
+def _cached_trending_videos(limit: int) -> list[dict]:
+    now = datetime.now(timezone.utc).timestamp()
+    if _trending_cache["data"] is not None and _trending_cache["expires_at"] > now:
+        return _trending_cache["data"][:limit]
+    videos = _search_trending_youtube_videos(limit=10)
+    _trending_cache["data"] = videos
+    _trending_cache["expires_at"] = now + TRENDING_CACHE_TTL_SECONDS
+    return videos[:limit]
+
+
+def _own_detection_data(video_id: str, db: Session) -> dict:
+    """Our own verdict/score for this video, if we've already processed it ourselves.
+
+    DetectionRequest doesn't have first-class verdict/score columns — result
+    fields live in `result_data` (JSONB), so this reads defensively and
+    degrades to nulls if those keys aren't present yet.
+    """
+    rows = (
+        db.query(DetectionRequest)
+        .filter(DetectionRequest.url_source.ilike(f"%{video_id}%"), DetectionRequest.status == "complete")
+        .order_by(DetectionRequest.created_at.desc())
+        .all()
+    )
+    if not rows:
+        return {"scanCount": None, "score": None, "verdict": None}
+    latest_data = rows[0].result_data or {}
+    return {
+        "scanCount": len({r.user_id for r in rows}),
+        "score": latest_data.get("score"),
+        "verdict": latest_data.get("verdict"),
+    }
+
+
+@router.get("/trending")
+def get_trending(
+    limit: int = Query(5, ge=1, le=10),
+    current_user: User = Depends(get_current_user),
+    db: Session = Depends(get_db),
+):
+    videos = _cached_trending_videos(limit)
+
+    items = []
+    for video in videos:
+        own = _own_detection_data(video["videoId"], db)
+        items.append({
+            "url": video["url"],
+            "scanCount": own["scanCount"],
+            "score": own["score"],
+            "verdict": own["verdict"],
+            "youtube": {
+                "title": video["title"],
+                "channelTitle": video["channelTitle"],
+                "thumbnailUrl": video["thumbnailUrl"],
+                "viewCount": video["viewCount"],
+                "likeCount": video["likeCount"],
+            },
+        })
+
+    return {"items": items}
