@@ -42,7 +42,7 @@ def _user_response(user: User) -> dict:
     last_day = calendar.monthrange(now.year, now.month)[1]
     reset_date = now.replace(day=last_day, hour=23, minute=59, second=59, microsecond=0)
 
-    display_name = user.name or f"{user.first_name or ''} {user.last_name or ''}".strip() or user.email
+    display_name = f"{user.first_name or ''} {user.last_name or ''}".strip() or user.name or user.email
     initials = "".join(w[0].upper() for w in display_name.split()[:2]) if display_name else "?"
 
     return {
