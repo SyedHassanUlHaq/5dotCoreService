@@ -61,7 +61,7 @@ def check_database_module_imports():
 
 
 def check_models_import():
-    from models import User, Payment, RefreshToken, Scan, Feedback, Subscription  # noqa: F401
+    from models import User, Payment, RefreshToken, DetectionRequest, Feedback, Subscription  # noqa: F401
 
 
 def check_schemas_import():
@@ -109,7 +109,7 @@ def check_fastapi_app_builds():
         "/",
         "/v1/auth/signup", "/v1/auth/signin",
         "/v1/users/me",
-        "/v1/scans", "/v1/scans/{scan_id}",
+        "/v1/scans", "/v1/scans/pending", "/v1/scans/trending",
         "/v1/feedback",
         "/v1/plans",
         "/v1/subscriptions",
@@ -188,7 +188,7 @@ def main_test() -> int:
     print("-- hard checks (imports & wiring, no network/DB required) --")
     _run("config.project_config imports", check_config_imports)
     _run("database module imports", check_database_module_imports)
-    _run("models (User, Payment, RefreshToken, Scan, Feedback, Subscription) import", check_models_import)
+    _run("models (User, Payment, RefreshToken, DetectionRequest, Feedback, Subscription) import", check_models_import)
     _run("schemas import", check_schemas_import)
     _run("utils (errors, s3, push, deps, jwt, security, otp_store, email) import", check_utils_import)
     _run("api routers import", check_api_routers_import)
