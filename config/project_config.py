@@ -57,6 +57,11 @@ GOOGLE_PLAY_PRODUCT_TEAM = os.getenv("GOOGLE_PLAY_PRODUCT_TEAM")
 # --- YouTube Data API (trending feed enrichment) ---
 YOUTUBE_API_KEY = os.getenv("YOUTUBE_API_KEY")
 
+# --- WhatsApp OTP (blueprint only, see utils/whatsapp.py — not wired to any route yet) ---
+WHATSAPP_PHONE_NUMBER_ID = os.getenv("WHATSAPP_PHONE_NUMBER_ID")
+WHATSAPP_ACCESS_TOKEN = os.getenv("WHATSAPP_ACCESS_TOKEN")
+WHATSAPP_OTP_TEMPLATE_NAME = os.getenv("WHATSAPP_OTP_TEMPLATE_NAME", "otp_verification")
+
 # --- Model metadata (surfaced in user/stats responses) ---
 MODEL_VERSION = os.getenv("MODEL_VERSION", "v3.2")
 

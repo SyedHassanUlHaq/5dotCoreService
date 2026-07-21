@@ -15,7 +15,7 @@ from config.project_config import (
     FACEBOOK_APP_SECRET, MICROSOFT_CLIENT_ID, MICROSOFT_TENANT_ID,
 )
 from schemas.auth import (
-    SignUpRequest, SignInRequest, GoogleAuthRequest,
+    SignUpRequest, VerifySignUpRequest, SignInRequest, GoogleAuthRequest,
     AppleAuthRequest, FacebookAuthRequest, OutlookAuthRequest,
     RefreshRequest, ForgotPasswordRequest, ResetPasswordRequest,
 )
@@ -99,23 +99,48 @@ def _get_or_create_oauth_user(db: Session, email: str, name: str | None) -> User
 # Routes
 # ---------------------------------------------------------------------------
 
-@router.post("/signup", status_code=201)
-def signup(payload: SignUpRequest, db: Session = Depends(get_db)):
+@router.post("/signup", status_code=202)
+async def signup(payload: SignUpRequest, db: Session = Depends(get_db)):
     if len(payload.password) < 8:
         raise AppError("VALIDATION_ERROR", "Password must be at least 8 characters.", 422)
     if db.query(User).filter(User.email == payload.email).first():
         raise AppError("EMAIL_IN_USE", "An account with this email already exists.", 409)
 
+    # Account isn't created yet, the OTP payload carries everything needed to
+    # create it once verified, so an unverified signup never leaves a row behind.
+    otp = generate_otp()
+    store_otp(payload.email, otp, {
+        "email": payload.email,
+        "hashedPassword": hash_password(payload.password),
+        "firstName": payload.firstName,
+        "lastName": payload.lastName,
+        "phoneNumber": payload.phoneNumber,
+    })
+    await send_otp_email(payload.email, otp)
+    return {"message": "Verification code sent.", "email": payload.email}
+
+
+@router.post("/signup/verify", status_code=201)
+def verify_signup(payload: VerifySignUpRequest, db: Session = Depends(get_db)):
+    valid, data = verify_otp(payload.email, payload.otp)
+    if not valid:
+        raise AppError("UNAUTHORIZED", "Invalid or expired code.", 401)
+
+    if db.query(User).filter(User.email == payload.email).first():
+        delete_otp(payload.email)
+        raise AppError("EMAIL_IN_USE", "An account with this email already exists.", 409)
+
     user = User(
-        email=payload.email,
-        hashed_password=hash_password(payload.password),
-        first_name=payload.firstName,
-        last_name=payload.lastName,
-        phone_number=payload.phoneNumber,
+        email=data["email"],
+        hashed_password=data["hashedPassword"],
+        first_name=data["firstName"],
+        last_name=data["lastName"],
+        phone_number=data["phoneNumber"],
     )
     db.add(user)
     db.commit()
     db.refresh(user)
+    delete_otp(payload.email)
     return _issue_tokens(user, db)
 
 
