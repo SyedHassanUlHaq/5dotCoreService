@@ -9,6 +9,11 @@ class SignUpRequest(BaseModel):
     phoneNumber: str | None = None
 
 
+class VerifySignUpRequest(BaseModel):
+    email: EmailStr
+    otp: str
+
+
 class SignInRequest(BaseModel):
     email: EmailStr
     password: str
