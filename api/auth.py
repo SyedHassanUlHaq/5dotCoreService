@@ -116,7 +116,7 @@ async def signup(payload: SignUpRequest, db: Session = Depends(get_db)):
         "lastName": payload.lastName,
         "phoneNumber": payload.phoneNumber,
     })
-    await send_otp_email(payload.email, otp)
+    await send_otp_email(payload.email, otp, purpose="signup")
     return {"message": "Verification code sent.", "email": payload.email}
 
 
