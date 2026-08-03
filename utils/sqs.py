@@ -14,10 +14,10 @@ def _client():
 
 
 _QUEUE_URLS = {
-    "video":   os.environ.get("SQS_URL_VIDEO", ""),
-    "audio":   os.environ.get("SQS_URL_AUDIO", ""),
-    "scene":   os.environ.get("SQS_URL_SCENE", ""),
-    "lipsync": os.environ.get("SQS_URL_LIPSYNC", ""),
+    "ai_video": os.environ.get("SQS_URL_AI_VIDEO", ""),
+    "ai_audio": os.environ.get("SQS_URL_AI_AUDIO", ""),
+    "changes":  os.environ.get("SQS_URL_CHANGES", ""),
+    "lipsync":  os.environ.get("SQS_URL_LIPSYNC", ""),
 }
 
 

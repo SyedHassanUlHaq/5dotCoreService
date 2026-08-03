@@ -22,6 +22,14 @@ NOTIFICATION_TEMPLATES: dict[str, dict[str, str]] = {
         "title": "Tamper detected — {editCount} edits found",
         "body": "{filename} has been cut and re-encoded.",
     },
+    "detection_complete": {
+        "title": "Your scan is ready",
+        "body": "Results for {filename} are ready to view.",
+    },
+    "detection_failed": {
+        "title": "Scan failed",
+        "body": "We couldn't complete analysis for {filename}.",
+    },
     "feedback_received": {
         "title": "Feedback received",
         "body": "Thanks for reporting {filename}. We'll review it within 48 hours.",
