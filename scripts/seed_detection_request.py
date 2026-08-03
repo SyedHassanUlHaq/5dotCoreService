@@ -103,20 +103,24 @@ def main():
                 segment_end=min((i + 1) * CHUNK_SECONDS, dr.duration or CHUNK_SECONDS),
             ))
         db.commit()
+
+        request_id = dr.id
+        saved_file_key = dr.file_key
+        saved_url = dr.url_source
     finally:
         db.close()
 
     active_types = [t for t, v in requested.items() if v]
-    print(f"Created DetectionRequest {dr.id}")
-    print(f"  file_key: {dr.file_key}")
-    print(f"  url_source: {dr.url_source}")
+    print(f"Created DetectionRequest {request_id}")
+    print(f"  file_key: {saved_file_key}")
+    print(f"  url_source: {saved_url}")
     print(f"  requested types: {active_types}")
     print(f"  chunks created: {num_chunks} ({CHUNK_SECONDS}s each)")
     print()
     print("Enqueue a job for it with, e.g.:")
     for t in active_types:
-        print(f"  python scripts/enqueue_test_job.py {dr.id} --type {t} "
-              f"{'--s3-key ' + dr.file_key if dr.file_key else '--url ' + (dr.url_source or '')}")
+        print(f"  python scripts/enqueue_test_job.py {request_id} --type {t} "
+              f"{'--s3-key ' + saved_file_key if saved_file_key else '--url ' + (saved_url or '')}")
 
 
 if __name__ == "__main__":
