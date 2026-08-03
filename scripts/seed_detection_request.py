@@ -15,8 +15,27 @@ sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 from database import SessionLocal
 from models.detection_request import DetectionRequest
+from models.user import User
 
 TYPES = ("ai_audio", "ai_video", "lipsync", "changes")
+
+
+def _ensure_user(db, user_id: int) -> User:
+    user = db.query(User).filter(User.id == user_id).first()
+    if user:
+        return user
+
+    user = User(
+        id=user_id,
+        email=f"test-user-{user_id}@example.com",
+        name=f"Test User {user_id}",
+        plan="free",
+    )
+    db.add(user)
+    db.commit()
+    db.refresh(user)
+    print(f"Created test user {user.id} ({user.email})")
+    return user
 
 
 def main():
@@ -40,6 +59,8 @@ def main():
 
     db = SessionLocal()
     try:
+        _ensure_user(db, args.user_id)
+
         dr = DetectionRequest(
             user_id=args.user_id,
             filename=args.filename,
