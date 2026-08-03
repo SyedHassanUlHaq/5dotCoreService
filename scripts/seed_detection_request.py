@@ -16,6 +16,7 @@ sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 from database import SessionLocal
 from models.detection_request import DetectionRequest
 from models.user import User
+from utils.s3 import upload_bytes, upload_file
 
 TYPES = ("ai_audio", "ai_video", "lipsync", "changes")
 
@@ -44,6 +45,7 @@ def main():
     parser.add_argument("--filename", default="test-clip.mp4")
     parser.add_argument("--file-key", default=None, help="Defaults to clips/<random>.mp4")
     parser.add_argument("--url", default=None, help="Set this instead of --file-key to simulate a link submission")
+    parser.add_argument("--source-file", default=None, help="Local file to actually upload to S3 for this request")
     parser.add_argument("--duration", type=float, default=42.0)
     for t in TYPES:
         parser.add_argument(f"--{t.replace('_', '-')}", action="store_true", help=f"Request the {t} detection type")
@@ -56,6 +58,14 @@ def main():
     file_key = args.file_key
     if not args.url and not file_key:
         file_key = f"clips/{uuid.uuid4()}.mp4"
+
+    if not args.url:
+        if args.source_file:
+            upload_file(args.source_file, file_key, content_type="video/mp4")
+            print(f"Uploaded {args.source_file} to s3 key {file_key}")
+        else:
+            upload_bytes(b"placeholder test clip - not a real media file", file_key, content_type="application/octet-stream")
+            print(f"Uploaded placeholder object to s3 key {file_key}")
 
     db = SessionLocal()
     try:
