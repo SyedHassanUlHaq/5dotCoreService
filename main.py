@@ -7,7 +7,7 @@ from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse
 from starlette.middleware.sessions import SessionMiddleware
 
-from api import auth, detection_request, feedback, notifications, payments, plans, stats, subscriptions, users, webhooks
+from api import auth, detection_request, detection_webhooks, feedback, notifications, payments, plans, stats, subscriptions, users, webhooks
 from utils.errors import AppError
 
 load_dotenv()
@@ -49,6 +49,7 @@ app.include_router(plans.router,         prefix="/v1/plans",         tags=["Plan
 app.include_router(subscriptions.router, prefix="/v1/subscriptions", tags=["Subscriptions"])
 app.include_router(stats.router,         prefix="/v1/stats",         tags=["Stats"])
 app.include_router(webhooks.router,      prefix="/v1/webhooks",      tags=["Webhooks"])
+app.include_router(detection_webhooks.router, prefix="/v1/webhooks", tags=["Webhooks"])
 app.include_router(payments.router,      prefix="/v1",              tags=["Payments"])
 
 

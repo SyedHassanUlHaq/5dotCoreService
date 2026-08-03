@@ -21,6 +21,9 @@ class DetectionRequest(Base):
     detect_ai_video = Column(Boolean, nullable=True)  # yes | no | unknown
     detect_lipsync = Column(Boolean, nullable=True)  # yes | no | unknown
     detect_changes = Column(Boolean, nullable=True)  # yes | no | unknown
+    overall_ai_audio_score = Column(Float, nullable=True)
+    overall_ai_video_score = Column(Float, nullable=True)
+    overall_lipsync_score = Column(Float, nullable=True)
     ai_audio_status = Column(String, nullable=True)  # queued | processing | complete | failed
     ai_video_status = Column(String, nullable=True)  # queued | processing | complete | failed
     lipsync_status = Column(String, nullable=True)  # queued | processing | complete | failed
