@@ -13,6 +13,7 @@ from urllib.parse import urlparse
 import requests
 import yt_dlp
 from fastapi import APIRouter, BackgroundTasks, Depends, UploadFile, File, Form, Query
+from pydantic import BaseModel
 from sqlalchemy.orm import Session
 
 from config.project_config import PLAN_SCAN_LIMITS, YOUTUBE_API_KEY
@@ -21,7 +22,7 @@ from models.detection_request import DetectionRequest
 from models.user import User
 from utils.deps import get_current_user
 from utils.errors import AppError
-from utils.s3 import upload_file
+from utils.s3 import upload_file, presigned_url, delete_file
 from utils.sqs import enqueue_scan
 
 router = APIRouter()
@@ -60,6 +61,25 @@ STATUS_PROGRESS = {
     "processing": 50,
     "complete": 100,
     "failed": 100,
+}
+
+# The app's scan UI only ever asks for one of these three at a time, but a
+# DetectionRequest row supports any combination of the four underlying
+# detection types — "video" bundles ai_video + lipsync into one combined
+# result, since the frontend renders them as a single deepfake-video view.
+SCAN_TYPE_DETECT_TYPES = {
+    "video": {"ai_video", "lipsync"},
+    "audio": {"ai_audio"},
+    "tamper": {"changes"},
+}
+SCAN_TYPE_PRIORITY = ("video", "audio", "tamper")
+
+_STAGE_STATUS = {
+    None: "pending",
+    "queued": "pending",
+    "processing": "running",
+    "complete": "complete",
+    "failed": "complete",
 }
 
 
@@ -117,6 +137,84 @@ def _detections_summary(dr: DetectionRequest) -> dict:
         t: {"requested": getattr(dr, field), "status": getattr(dr, STATUS_FIELD_BY_TYPE[t])}
         for t, field in DETECT_FIELD_BY_TYPE.items()
         if getattr(dr, field)
+    }
+
+
+def _detect_kwargs_for_scan_type(scan_type: str) -> dict:
+    return {DETECT_FIELD_BY_TYPE[t]: True for t in SCAN_TYPE_DETECT_TYPES[scan_type]}
+
+
+def _scan_type_of(dr: DetectionRequest) -> str | None:
+    requested = set(_requested_types_of(dr))
+    for scan_type in SCAN_TYPE_PRIORITY:
+        if requested & SCAN_TYPE_DETECT_TYPES[scan_type]:
+            return scan_type
+    return None
+
+
+def _result_for(dr: DetectionRequest, detect_type: str) -> dict:
+    return (dr.result_data or {}).get(detect_type) or {}
+
+
+def _scan_result_data(dr: DetectionRequest, scan_type: str) -> dict:
+    """Best-effort read of whatever the downstream detection service reported.
+
+    result_data has no fixed schema, it's whatever `payload.result` dict the
+    matching webhook received, so every key here is read defensively and
+    degrades to a neutral default if the service didn't include it.
+    """
+    if scan_type == "video":
+        video = _result_for(dr, "ai_video")
+        lipsync = _result_for(dr, "lipsync")
+        return {
+            "verdict": video.get("verdict") or lipsync.get("verdict"),
+            "score": video.get("score") if video.get("score") is not None else lipsync.get("score"),
+            "plainEnglishExplanation": video.get("plainEnglishExplanation") or lipsync.get("plainEnglishExplanation") or "",
+            "segments": (video.get("segments") or []) + (lipsync.get("segments") or []),
+        }
+    detect_type = next(iter(SCAN_TYPE_DETECT_TYPES[scan_type]))
+    return _result_for(dr, detect_type)
+
+
+def _result_type_for(scan_type: str, verdict: str | None) -> str:
+    if scan_type == "video":
+        return "deepfakeVideo"
+    if scan_type == "tamper":
+        return "editTamper"
+    return {"ai": "aiVoice", "tampered": "tampered"}.get(verdict, "authentic")
+
+
+def _to_scan_list_item(dr: DetectionRequest) -> dict | None:
+    scan_type = _scan_type_of(dr)
+    if not scan_type:
+        return None
+    data = _scan_result_data(dr, scan_type)
+    verdict = data.get("verdict")
+    if not verdict:
+        return None
+    return {
+        "scanId": str(dr.id),
+        "filename": dr.filename,
+        "duration": dr.duration or 0,
+        "scanType": scan_type,
+        "resultType": _result_type_for(scan_type, verdict),
+        "verdict": verdict,
+        "score": data.get("score") or 0,
+        "completedAt": dr.completed_at.isoformat() if dr.completed_at else None,
+    }
+
+
+def _current_stage(dr: DetectionRequest) -> str | None:
+    for t in _requested_types_of(dr):
+        if getattr(dr, STATUS_FIELD_BY_TYPE[t]) not in ("complete", "failed"):
+            return t
+    return None
+
+
+def _stages(dr: DetectionRequest) -> dict:
+    return {
+        t: {"status": _STAGE_STATUS.get(getattr(dr, STATUS_FIELD_BY_TYPE[t]), "pending")}
+        for t in _requested_types_of(dr)
     }
 
 
@@ -224,6 +322,8 @@ async def create_detection_request(
     background_tasks: BackgroundTasks,
     file: UploadFile | None = File(None),
     url: str | None = Form(None),
+    scanType: str | None = Form(None),
+    filename: str | None = Form(None),
     detectAiAudio: bool = Form(False),
     detectAiVideo: bool = Form(False),
     detectLipsync: bool = Form(False),
@@ -233,6 +333,17 @@ async def create_detection_request(
 ):
     if bool(file) == bool(url):
         raise AppError("VALIDATION_ERROR", "Provide either a file or a url, not both.", 422)
+
+    # The app submits a single `scanType` (audio/video/tamper) rather than the
+    # four raw detect flags; when present it takes over from them entirely.
+    if scanType:
+        if scanType not in SCAN_TYPE_DETECT_TYPES:
+            raise AppError("VALIDATION_ERROR", "scanType must be one of: audio, video, tamper.", 422)
+        flags = _detect_kwargs_for_scan_type(scanType)
+        detectAiAudio = flags.get("detect_ai_audio", False)
+        detectAiVideo = flags.get("detect_ai_video", False)
+        detectLipsync = flags.get("detect_lipsync", False)
+        detectChanges = flags.get("detect_changes", False)
 
     requested_types = _requested_types(detectAiAudio, detectAiVideo, detectLipsync, detectChanges)
     if not requested_types:
@@ -250,7 +361,7 @@ async def create_detection_request(
 
         dr = DetectionRequest(
             user_id=current_user.id,
-            filename=url,
+            filename=filename or url,
             url_source=url,
             detect_ai_audio=detectAiAudio,
             detect_ai_video=detectAiVideo,
@@ -265,9 +376,10 @@ async def create_detection_request(
         background_tasks.add_task(_process_url, str(dr.id), url, requested_types)
 
         return {
-            "requestId": str(dr.id),
+            "scanId": str(dr.id),
             "status": dr.status,
-            "createdAt": dr.created_at.isoformat() if dr.created_at else datetime.now(timezone.utc).isoformat(),
+            "estimatedSeconds": 90,
+            "uploadedAt": dr.created_at.isoformat() if dr.created_at else datetime.now(timezone.utc).isoformat(),
         }
 
     # --- direct file ---
@@ -293,7 +405,7 @@ async def create_detection_request(
 
     dr = DetectionRequest(
         user_id=current_user.id,
-        filename=file.filename or "upload",
+        filename=filename or file.filename or "upload",
         file_size=total_size,
         duration=duration,
         detect_ai_audio=detectAiAudio,
@@ -309,9 +421,65 @@ async def create_detection_request(
     background_tasks.add_task(_process_upload, str(dr.id), tmp_path, ext, requested_types)
 
     return {
-        "requestId": str(dr.id),
+        "scanId": str(dr.id),
         "status": dr.status,
-        "createdAt": dr.created_at.isoformat() if dr.created_at else datetime.now(timezone.utc).isoformat(),
+        "estimatedSeconds": 90,
+        "uploadedAt": dr.created_at.isoformat() if dr.created_at else datetime.now(timezone.utc).isoformat(),
+    }
+
+
+class SubmitUrlScanRequest(BaseModel):
+    url: str
+    scanType: str
+
+
+@router.post("/url", status_code=202)
+async def submit_url_scan(
+    payload: SubmitUrlScanRequest,
+    background_tasks: BackgroundTasks,
+    current_user: User = Depends(get_current_user),
+    db: Session = Depends(get_db),
+):
+    if payload.scanType not in SCAN_TYPE_DETECT_TYPES:
+        raise AppError("VALIDATION_ERROR", "scanType must be one of: audio, video, tamper.", 422)
+    if not _is_supported_url(payload.url):
+        raise AppError(
+            "UNSUPPORTED_SOURCE",
+            "Only YouTube, Facebook, Instagram, X, and TikTok links are supported.",
+            422,
+        )
+
+    _check_quota(current_user)
+
+    flags = _detect_kwargs_for_scan_type(payload.scanType)
+    requested_types = _requested_types(
+        flags.get("detect_ai_audio", False),
+        flags.get("detect_ai_video", False),
+        flags.get("detect_lipsync", False),
+        flags.get("detect_changes", False),
+    )
+
+    dr = DetectionRequest(
+        user_id=current_user.id,
+        filename=payload.url,
+        url_source=payload.url,
+        detect_ai_audio=flags.get("detect_ai_audio", False),
+        detect_ai_video=flags.get("detect_ai_video", False),
+        detect_lipsync=flags.get("detect_lipsync", False),
+        detect_changes=flags.get("detect_changes", False),
+        status="processing",
+    )
+    db.add(dr)
+    db.commit()
+    db.refresh(dr)
+
+    background_tasks.add_task(_process_url, str(dr.id), payload.url, requested_types)
+
+    return {
+        "scanId": str(dr.id),
+        "status": dr.status,
+        "estimatedSeconds": 90,
+        "uploadedAt": dr.created_at.isoformat() if dr.created_at else datetime.now(timezone.utc).isoformat(),
     }
 
 
@@ -344,6 +512,150 @@ def list_pending_requests(
             for dr in rows
         ],
     }
+
+
+@router.get("")
+def list_scans(
+    page: int = Query(1, ge=1),
+    limit: int = Query(20, ge=1, le=100),
+    verdict: str | None = Query(None),
+    scanType: str | None = Query(None),
+    current_user: User = Depends(get_current_user),
+    db: Session = Depends(get_db),
+):
+    rows = (
+        db.query(DetectionRequest)
+        .filter(DetectionRequest.user_id == current_user.id, DetectionRequest.status == "complete")
+        .order_by(DetectionRequest.completed_at.desc())
+        .all()
+    )
+
+    items = [item for dr in rows if (item := _to_scan_list_item(dr)) is not None]
+    if verdict:
+        items = [i for i in items if i["verdict"] == verdict]
+    if scanType:
+        items = [i for i in items if i["scanType"] == scanType]
+
+    total = len(items)
+    start = (page - 1) * limit
+    page_items = items[start:start + limit]
+
+    return {
+        "items": page_items,
+        "total": total,
+        "page": page,
+        "limit": limit,
+        "hasMore": start + limit < total,
+    }
+
+
+@router.get("/{scan_id}")
+def get_scan(
+    scan_id: uuid.UUID,
+    current_user: User = Depends(get_current_user),
+    db: Session = Depends(get_db),
+):
+    dr = (
+        db.query(DetectionRequest)
+        .filter(DetectionRequest.id == scan_id, DetectionRequest.user_id == current_user.id)
+        .first()
+    )
+    if not dr:
+        raise AppError("NOT_FOUND", "Scan not found.", 404)
+
+    scan_type = _scan_type_of(dr)
+    if not scan_type:
+        raise AppError("NOT_FOUND", "Scan not found.", 404)
+
+    data = _scan_result_data(dr, scan_type)
+    verdict = data.get("verdict") or "authentic"
+    score = data.get("score") or 0
+
+    base = {
+        "scanId": str(dr.id),
+        "userId": f"usr_{dr.user_id}",
+        "filename": dr.filename,
+        "fileSize": dr.file_size or 0,
+        "duration": dr.duration or 0,
+        "scanType": scan_type,
+        "verdict": verdict,
+        "score": score,
+        "status": dr.status,
+        "createdAt": dr.created_at.isoformat() if dr.created_at else None,
+        "completedAt": dr.completed_at.isoformat() if dr.completed_at else None,
+    }
+
+    if scan_type == "audio":
+        base.update({
+            "resultType": _result_type_for(scan_type, verdict),
+            "bitrate": dr.bitrate or "",
+            "tagline": data.get("tagline", ""),
+            "waveformBars": data.get("waveformBars", []),
+            "evidence": data.get("evidence", []),
+        })
+    elif scan_type == "video":
+        base.update({
+            "resultType": "deepfakeVideo",
+            "thumbnailUrl": presigned_url(dr.thumbnail_key) if dr.thumbnail_key else "",
+            "plainEnglishExplanation": data.get("plainEnglishExplanation", ""),
+            "segments": data.get("segments", []),
+        })
+    else:  # tamper
+        edits = data.get("edits", [])
+        base.update({
+            "resultType": "editTamper",
+            "editCount": data.get("editCount", len(edits)),
+            "editSummary": data.get("editSummary", ""),
+            "tamperLevel": data.get("tamperLevel", "low"),
+            "edits": edits,
+        })
+
+    return base
+
+
+@router.get("/{scan_id}/status")
+def get_scan_status(
+    scan_id: uuid.UUID,
+    current_user: User = Depends(get_current_user),
+    db: Session = Depends(get_db),
+):
+    dr = (
+        db.query(DetectionRequest)
+        .filter(DetectionRequest.id == scan_id, DetectionRequest.user_id == current_user.id)
+        .first()
+    )
+    if not dr:
+        raise AppError("NOT_FOUND", "Scan not found.", 404)
+
+    return {
+        "scanId": str(dr.id),
+        "progress": _progress(dr),
+        "currentStage": _current_stage(dr),
+        "status": dr.status,
+        "stages": _stages(dr),
+        "estimatedSecondsRemaining": 0 if dr.status in ("complete", "failed") else 30,
+    }
+
+
+@router.delete("/{scan_id}", status_code=204)
+def delete_scan(
+    scan_id: uuid.UUID,
+    current_user: User = Depends(get_current_user),
+    db: Session = Depends(get_db),
+):
+    dr = (
+        db.query(DetectionRequest)
+        .filter(DetectionRequest.id == scan_id, DetectionRequest.user_id == current_user.id)
+        .first()
+    )
+    if not dr:
+        raise AppError("NOT_FOUND", "Scan not found.", 404)
+
+    if dr.file_key:
+        delete_file(dr.file_key)
+    db.delete(dr)
+    db.commit()
+    return None
 
 
 # ---------------------------------------------------------------------------

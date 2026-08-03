@@ -4,6 +4,7 @@ from fastapi import APIRouter, Depends
 from sqlalchemy import func
 from sqlalchemy.orm import Session
 
+from api.detection_request import _scan_result_data, _scan_type_of
 from config.project_config import MODEL_VERSION
 from database import get_db
 from models.detection_request import DetectionRequest
@@ -14,6 +15,13 @@ router = APIRouter()
 
 _MODEL_BENCHMARK_ACCURACY = 88.4
 _CROSS_CHECKED_CASES = 240
+
+
+def _verdict_of(dr: DetectionRequest) -> str | None:
+    scan_type = _scan_type_of(dr)
+    if not scan_type:
+        return None
+    return _scan_result_data(dr, scan_type).get("verdict")
 
 
 @router.get("/weekly")
@@ -46,7 +54,7 @@ def weekly_stats(
     )
 
     total_scans = user_scans.count()
-    flagged = user_scans.filter(DetectionRequest.verdict == "ai").count()
+    flagged = sum(1 for dr in user_scans.all() if _verdict_of(dr) == "ai")
 
     # Daily breakdown Mon–Sun of current week
     day_names = ["Mon", "Tue", "Wed", "Thu", "Fri", "Sat", "Sun"]
