@@ -7,6 +7,7 @@ Usage:
 """
 
 import argparse
+import math
 import os
 import sys
 import uuid
@@ -14,11 +15,13 @@ import uuid
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 from database import SessionLocal
+from models.chunk import Chunk
 from models.detection_request import DetectionRequest
 from models.user import User
 from utils.s3 import upload_bytes, upload_file
 
 TYPES = ("ai_audio", "ai_video", "lipsync", "changes")
+CHUNK_SECONDS = 5.0
 
 
 def _ensure_user(db, user_id: int) -> User:
@@ -90,6 +93,16 @@ def main():
         db.add(dr)
         db.commit()
         db.refresh(dr)
+
+        num_chunks = max(1, math.ceil((dr.duration or CHUNK_SECONDS) / CHUNK_SECONDS))
+        for i in range(num_chunks):
+            db.add(Chunk(
+                detection_request_id=dr.id,
+                chunk_index=i,
+                segment_start=i * CHUNK_SECONDS,
+                segment_end=min((i + 1) * CHUNK_SECONDS, dr.duration or CHUNK_SECONDS),
+            ))
+        db.commit()
     finally:
         db.close()
 
@@ -98,6 +111,7 @@ def main():
     print(f"  file_key: {dr.file_key}")
     print(f"  url_source: {dr.url_source}")
     print(f"  requested types: {active_types}")
+    print(f"  chunks created: {num_chunks} ({CHUNK_SECONDS}s each)")
     print()
     print("Enqueue a job for it with, e.g.:")
     for t in active_types:

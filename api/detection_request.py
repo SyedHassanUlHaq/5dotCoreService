@@ -3,6 +3,7 @@ Detection request endpoints:
   POST   /scans   submit a file or a supported link (YouTube / Facebook / Instagram / X / TikTok), enqueue detection
 """
 
+import math
 import os
 import subprocess
 import tempfile
@@ -17,6 +18,7 @@ from sqlalchemy.orm import Session
 
 from config.project_config import PLAN_SCAN_LIMITS, YOUTUBE_API_KEY
 from database import SessionLocal, get_db
+from models.chunk import Chunk
 from models.detection_request import DetectionRequest
 from models.user import User
 from utils.deps import get_current_user
@@ -53,6 +55,8 @@ DETECT_FIELD_BY_TYPE = {
 }
 
 PENDING_STATUSES = ("queued", "processing")
+
+CHUNK_SECONDS = 5.0
 
 STATUS_PROGRESS = {
     None: 0,
@@ -132,6 +136,22 @@ def _fail(db: Session, request_id: uuid.UUID, requested_types: list[str], messag
     db.commit()
 
 
+def _create_chunks(db: Session, dr: DetectionRequest):
+    """Pre-create the detection_chunks placeholder rows the worker services
+    UPDATE by (detection_request_id, chunk_index) as they score each segment."""
+    duration = dr.duration or CHUNK_SECONDS
+    num_chunks = max(1, math.ceil(duration / CHUNK_SECONDS))
+
+    for i in range(num_chunks):
+        db.add(Chunk(
+            detection_request_id=dr.id,
+            chunk_index=i,
+            segment_start=i * CHUNK_SECONDS,
+            segment_end=min((i + 1) * CHUNK_SECONDS, duration),
+        ))
+    db.commit()
+
+
 # ---------------------------------------------------------------------------
 # Background work — runs after the response is returned
 # ---------------------------------------------------------------------------
@@ -157,6 +177,8 @@ def _process_upload(request_id: str, tmp_path: str, ext: str, requested_types: l
         for t in requested_types:
             setattr(dr, STATUS_FIELD_BY_TYPE[t], "queued")
         db.commit()
+
+        _create_chunks(db, dr)
 
         for t in requested_types:
             enqueue_scan(request_id, t, s3_key=s3_key)
@@ -206,6 +228,8 @@ def _process_url(request_id: str, url: str, requested_types: list[str]):
         for t in requested_types:
             setattr(dr, STATUS_FIELD_BY_TYPE[t], "queued")
         db.commit()
+
+        _create_chunks(db, dr)
 
         for t in requested_types:
             enqueue_scan(request_id, t, s3_key=s3_key)
