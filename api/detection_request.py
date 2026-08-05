@@ -370,6 +370,37 @@ def list_pending_requests(
     }
 
 
+@router.get("/{request_id}")
+def get_detection_request(
+    request_id: str,
+    current_user: User = Depends(get_current_user),
+    db: Session = Depends(get_db),
+):
+    try:
+        rid = uuid.UUID(request_id)
+    except ValueError:
+        raise AppError("NOT_FOUND", "Scan not found.", 404)
+
+    dr = db.query(DetectionRequest).filter(
+        DetectionRequest.id == rid,
+        DetectionRequest.user_id == current_user.id,
+    ).first()
+    if not dr:
+        raise AppError("NOT_FOUND", "Scan not found.", 404)
+
+    return {
+        "requestId": str(dr.id),
+        "filename": dr.filename,
+        "status": dr.status,
+        "progress": _progress(dr),
+        "detections": _detections_summary(dr),
+        "resultData": dr.result_data,
+        "errorMessage": dr.error_message,
+        "createdAt": dr.created_at.isoformat() if dr.created_at else None,
+        "completedAt": dr.completed_at.isoformat() if dr.completed_at else None,
+    }
+
+
 # ---------------------------------------------------------------------------
 # Trending — real trending deepfake/AI-generated videos pulled directly from
 # YouTube, independent of whether anyone has scanned them here. If we happen
