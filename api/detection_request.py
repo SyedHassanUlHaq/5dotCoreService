@@ -370,6 +370,71 @@ def list_pending_requests(
     }
 
 
+@router.get("/history")
+def list_all_requests(
+    limit: int = Query(20, ge=1, le=100),
+    offset: int = Query(0, ge=0),
+    current_user: User = Depends(get_current_user),
+    db: Session = Depends(get_db),
+):
+    rows = (
+        db.query(DetectionRequest)
+        .filter(DetectionRequest.user_id == current_user.id)
+        .order_by(DetectionRequest.created_at.desc())
+        .offset(offset)
+        .limit(limit)
+        .all()
+    )
+    total = db.query(DetectionRequest).filter(DetectionRequest.user_id == current_user.id).count()
+
+    return {
+        "total": total,
+        "offset": offset,
+        "limit": limit,
+        "items": [
+            {
+                "requestId": str(dr.id),
+                "filename": dr.filename,
+                "status": dr.status,
+                "progress": _progress(dr),
+                "detections": _detections_summary(dr),
+                "resultData": dr.result_data,
+                "createdAt": dr.created_at.isoformat() if dr.created_at else None,
+                "completedAt": dr.completed_at.isoformat() if dr.completed_at else None,
+            }
+            for dr in rows
+        ],
+    }
+
+
+@router.get("/trending")
+def get_trending(
+    limit: int = Query(5, ge=1, le=10),
+    current_user: User = Depends(get_current_user),
+    db: Session = Depends(get_db),
+):
+    videos = _cached_trending_videos(limit)
+
+    items = []
+    for video in videos:
+        own = _own_detection_data(video["videoId"], db)
+        items.append({
+            "url": video["url"],
+            "scanCount": own["scanCount"],
+            "score": own["score"],
+            "verdict": own["verdict"],
+            "youtube": {
+                "title": video["title"],
+                "channelTitle": video["channelTitle"],
+                "thumbnailUrl": video["thumbnailUrl"],
+                "viewCount": video["viewCount"],
+                "likeCount": video["likeCount"],
+            },
+        })
+
+    return {"items": items}
+
+
 @router.get("/{request_id}")
 def get_detection_request(
     request_id: str,
@@ -502,31 +567,3 @@ def _own_detection_data(video_id: str, db: Session) -> dict:
         "score": latest_data.get("score"),
         "verdict": latest_data.get("verdict"),
     }
-
-
-@router.get("/trending")
-def get_trending(
-    limit: int = Query(5, ge=1, le=10),
-    current_user: User = Depends(get_current_user),
-    db: Session = Depends(get_db),
-):
-    videos = _cached_trending_videos(limit)
-
-    items = []
-    for video in videos:
-        own = _own_detection_data(video["videoId"], db)
-        items.append({
-            "url": video["url"],
-            "scanCount": own["scanCount"],
-            "score": own["score"],
-            "verdict": own["verdict"],
-            "youtube": {
-                "title": video["title"],
-                "channelTitle": video["channelTitle"],
-                "thumbnailUrl": video["thumbnailUrl"],
-                "viewCount": video["viewCount"],
-                "likeCount": video["likeCount"],
-            },
-        })
-
-    return {"items": items}
