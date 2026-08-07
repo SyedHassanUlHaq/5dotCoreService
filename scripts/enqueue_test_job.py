@@ -21,6 +21,7 @@ load_dotenv()
 
 
 def main():
+    load_dotenv()
     parser = argparse.ArgumentParser(description="Enqueue a test detection job.")
     parser.add_argument("request_id")
     parser.add_argument("--type", required=True, choices=["ai_audio", "ai_video", "lipsync", "changes"])
