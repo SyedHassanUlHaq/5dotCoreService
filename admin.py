@@ -62,6 +62,7 @@ class DetectionRequestAdmin(ModelView, model=DetectionRequest):
 
 class ChunkAdmin(ModelView, model=Chunk):
     column_list = "__all__"
+    column_default_sort = ("created_at", True)
 
 
 class FeedbackAdmin(ModelView, model=Feedback):
