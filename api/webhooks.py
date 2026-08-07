@@ -2,11 +2,14 @@ import base64
 import json
 import logging
 import os
+import uuid
 import stripe
 from datetime import datetime, timezone
 from fastapi import APIRouter, Request, HTTPException, Depends
+from pydantic import BaseModel
 from sqlalchemy.orm import Session
 from database import get_db
+from models.detection_request import DetectionRequest
 from models.payments import Payment
 from models.subscription import Subscription
 from utils import apple_iap, google_play
@@ -14,6 +17,64 @@ from utils import apple_iap, google_play
 logger = logging.getLogger(__name__)
 
 router = APIRouter(prefix="/webhooks", tags=["Webhooks"])
+
+_WORKER_SECRET = os.getenv("WORKER_WEBHOOK_SECRET", "")
+
+SERVICE_STATUS_FIELD = {
+    "video": "ai_video_status",
+    "audio": "ai_audio_status",
+    "lipsync": "lipsync_status",
+    "scene": "changes_status",
+}
+
+
+class WorkerWebhookPayload(BaseModel):
+    job_id: str
+    service_name: str
+    status: str
+    result: dict = {}
+
+
+_DETECT_TO_STATUS = {
+    "detect_ai_video": "ai_video_status",
+    "detect_ai_audio": "ai_audio_status",
+    "detect_lipsync":  "lipsync_status",
+    "detect_changes":  "changes_status",
+}
+
+
+@router.post("/worker")
+async def worker_webhook(payload: WorkerWebhookPayload, request: Request, db: Session = Depends(get_db)):
+    if _WORKER_SECRET:
+        token = request.headers.get("X-Worker-Secret", "")
+        if token != _WORKER_SECRET:
+            raise HTTPException(status_code=401, detail="Unauthorized")
+
+    try:
+        job_uuid = uuid.UUID(payload.job_id)
+    except ValueError:
+        raise HTTPException(status_code=422, detail="Invalid job_id")
+
+    dr = db.query(DetectionRequest).filter(DetectionRequest.id == job_uuid).first()
+    if not dr:
+        raise HTTPException(status_code=404, detail="Job not found")
+
+    status_field = SERVICE_STATUS_FIELD.get(payload.service_name)
+    if status_field:
+        setattr(dr, status_field, payload.status)
+
+    requested_statuses = [
+        getattr(dr, status_field)
+        for detect_field, status_field in _DETECT_TO_STATUS.items()
+        if getattr(dr, detect_field, False)
+    ]
+    if requested_statuses and all(s in ("complete", "failed") for s in requested_statuses):
+        dr.status = "complete" if all(s == "complete" for s in requested_statuses) else "failed"
+        dr.completed_at = datetime.now(timezone.utc)
+
+    db.commit()
+    logger.info("Worker webhook: job=%s service=%s status=%s", payload.job_id, payload.service_name, payload.status)
+    return {"status": "ok"}
 
 @router.post("/stripe")
 async def stripe_webhook(request: Request, db: Session = Depends(get_db)):

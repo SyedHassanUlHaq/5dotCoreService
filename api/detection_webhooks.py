@@ -32,7 +32,7 @@ WEBHOOK_SECRET = os.environ.get("WEBHOOK_SECRET", "")
 
 
 def _verify_secret(x_webhook_secret: str | None = Header(None)):
-    if not WEBHOOK_SECRET or not x_webhook_secret or not secrets.compare_digest(x_webhook_secret, WEBHOOK_SECRET):
+    if WEBHOOK_SECRET and (not x_webhook_secret or not secrets.compare_digest(x_webhook_secret, WEBHOOK_SECRET)):
         raise AppError("UNAUTHORIZED", "Invalid webhook secret.", 401)
 
 
