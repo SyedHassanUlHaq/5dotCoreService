@@ -15,6 +15,9 @@ import sys
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 from utils.sqs import enqueue_scan
+from dotenv import load_dotenv
+
+load_dotenv()
 
 
 def main():
