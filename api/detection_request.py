@@ -124,6 +124,40 @@ def _detections_summary(dr: DetectionRequest) -> dict:
     }
 
 
+SCAN_TYPE_BY_RESULT_KEY = {"ai_video": "video", "ai_audio": "audio", "lipsync": "tamper", "changes": "tamper"}
+
+RESULT_TYPE_BY_SCAN_VERDICT = {
+    ("audio", "ai"): "aiVoice",
+    ("audio", "authentic"): "authentic",
+    ("audio", "tampered"): "tampered",
+    ("video", "ai"): "deepfakeVideo",
+    ("video", "authentic"): "authentic",
+    ("tamper", "tampered"): "editTamper",
+    ("tamper", "authentic"): "authentic",
+}
+
+
+def _scan_summary(dr: DetectionRequest) -> dict | None:
+    """Flatten a completed DetectionRequest's per-type `result_data` (as
+    written by the detection webhooks — keyed "ai_video"/"ai_audio"/
+    "lipsync"/"changes", each already holding its own {verdict, score, ...})
+    into the {scanType, resultType, verdict, score} shape the app's history
+    list and result screens expect. Returns None if there's no usable
+    result yet (still processing, or the detection job never returned one).
+    """
+    result_data = dr.result_data or {}
+    for key, scan_type in SCAN_TYPE_BY_RESULT_KEY.items():
+        payload = result_data.get(key)
+        if not payload or "verdict" not in payload or "score" not in payload:
+            continue
+        verdict = payload["verdict"]
+        result_type = RESULT_TYPE_BY_SCAN_VERDICT.get((scan_type, verdict))
+        if not result_type:
+            continue
+        return {"scanType": scan_type, "resultType": result_type, "verdict": verdict, "score": payload["score"]}
+    return None
+
+
 def _fail(db: Session, request_id: uuid.UUID, requested_types: list[str], message: str):
     dr = db.query(DetectionRequest).filter(DetectionRequest.id == request_id).first()
     if not dr:
@@ -340,6 +374,62 @@ async def create_detection_request(
 
 
 # ---------------------------------------------------------------------------
+# History list — the app's Activity/History screens (matches BACKEND_SPEC.md
+# §8.1). Distinct from /history and /pending below, which predate this and
+# return a different, unmapped shape some other internal caller may still
+# rely on — left as-is rather than changed out from under it.
+# ---------------------------------------------------------------------------
+
+@router.get("")
+def list_scans(
+    page: int = Query(1, ge=1),
+    limit: int = Query(20, ge=1, le=50),
+    verdict: str | None = Query(None),
+    scanType: str | None = Query(None),
+    current_user: User = Depends(get_current_user),
+    db: Session = Depends(get_db),
+):
+    rows = (
+        db.query(DetectionRequest)
+        .filter(DetectionRequest.user_id == current_user.id, DetectionRequest.status == "complete")
+        .order_by(DetectionRequest.created_at.desc())
+        .all()
+    )
+
+    items = []
+    for dr in rows:
+        summary = _scan_summary(dr)
+        if not summary:
+            continue
+        if verdict and summary["verdict"] != verdict:
+            continue
+        if scanType and summary["scanType"] != scanType:
+            continue
+        items.append({
+            "scanId": str(dr.id),
+            "filename": dr.filename,
+            "duration": dr.duration or 0,
+            "scanType": summary["scanType"],
+            "resultType": summary["resultType"],
+            "verdict": summary["verdict"],
+            "score": summary["score"],
+            "completedAt": dr.completed_at.isoformat() if dr.completed_at else None,
+        })
+
+    total = len(items)
+    start = (page - 1) * limit
+    page_items = items[start:start + limit]
+
+    return {
+        "items": page_items,
+        "total": total,
+        "page": page,
+        "limit": limit,
+        "hasMore": start + limit < total,
+    }
+
+
+# ---------------------------------------------------------------------------
 # Status
 # ---------------------------------------------------------------------------
 
@@ -463,6 +553,61 @@ def get_detection_request(
         "errorMessage": dr.error_message,
         "createdAt": dr.created_at.isoformat() if dr.created_at else None,
         "completedAt": dr.completed_at.isoformat() if dr.completed_at else None,
+    }
+
+
+_STAGE_NAMES = ["decoding_stream", "spectral_analysis", "frame_coherence", "cross_check_model"]
+
+
+@router.get("/{request_id}/status")
+def get_scan_status(
+    request_id: str,
+    current_user: User = Depends(get_current_user),
+    db: Session = Depends(get_db),
+):
+    """Polling endpoint the Analyzing screen hits every ~500ms (BACKEND_SPEC.md
+    §6, Option B). Didn't exist before — every poll 404'd, so a scan could
+    reach `status: complete` in the DB and the app would never find out.
+
+    The 4 named stages here are a UI approximation: this backend only
+    tracks queued/processing/complete/failed per detection type, not
+    real per-stage progress, so `progress` is split into 4 even bands to
+    drive the Analyzing screen's checklist rather than reflecting an
+    actual pipeline stage signal.
+    """
+    try:
+        rid = uuid.UUID(request_id)
+    except ValueError:
+        raise AppError("NOT_FOUND", "Scan not found.", 404)
+
+    dr = db.query(DetectionRequest).filter(
+        DetectionRequest.id == rid,
+        DetectionRequest.user_id == current_user.id,
+    ).first()
+    if not dr:
+        raise AppError("NOT_FOUND", "Scan not found.", 404)
+
+    progress = _progress(dr)
+    band = 100 / len(_STAGE_NAMES)
+    stages = {}
+    for i, name in enumerate(_STAGE_NAMES):
+        if progress >= (i + 1) * band:
+            stages[name] = {"status": "complete"}
+        elif progress >= i * band:
+            stages[name] = {"status": "running"}
+        else:
+            stages[name] = {"status": "pending"}
+    current_stage = next((name for name, s in stages.items() if s["status"] == "running"), None)
+    if current_stage is None and progress < 100:
+        current_stage = _STAGE_NAMES[0]
+
+    return {
+        "scanId": str(dr.id),
+        "progress": progress,
+        "currentStage": current_stage,
+        "status": dr.status,
+        "stages": stages,
+        "estimatedSecondsRemaining": max(0, round((100 - progress) / 10)),
     }
 
 

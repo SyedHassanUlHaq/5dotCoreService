@@ -8,7 +8,7 @@ from fastapi.responses import JSONResponse
 from starlette.middleware.sessions import SessionMiddleware
 
 from admin import setup_admin
-from api import auth, detection_request, detection_webhooks, feedback, notifications, payments, plans, stats, subscriptions, users, webhooks
+from api import auth, crash_reports, detection_request, detection_webhooks, feedback, notifications, payments, plans, stats, subscriptions, users, webhooks
 from utils.errors import AppError
 
 load_dotenv()
@@ -52,6 +52,7 @@ app.include_router(stats.router,         prefix="/v1/stats",         tags=["Stat
 app.include_router(webhooks.router,      prefix="/v1/webhooks",      tags=["Webhooks"])
 app.include_router(detection_webhooks.router, prefix="/v1/webhooks", tags=["Webhooks"])
 app.include_router(payments.router,      prefix="/v1",              tags=["Payments"])
+app.include_router(crash_reports.router, prefix="/v1/crash-reports", tags=["Crash reports"])
 
 setup_admin(app)
 
