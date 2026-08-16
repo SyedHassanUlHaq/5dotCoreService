@@ -6,5 +6,6 @@ from models.chunk import Chunk
 from models.feedback import Feedback
 from models.subscription import Subscription
 from models.notification import Notification
+from models.crash_report import CrashReport
 
-__all__ = ["User", "Payment", "RefreshToken", "DetectionRequest", "Chunk", "Feedback", "Subscription", "Notification"]
+__all__ = ["User", "Payment", "RefreshToken", "DetectionRequest", "Chunk", "Feedback", "Subscription", "Notification", "CrashReport"]
