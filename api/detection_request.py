@@ -310,10 +310,14 @@ async def create_detection_request(
             total_size += len(chunk)
         tmp_path = tmp.name
 
-    duration = _probe_duration(tmp_path)
-    if duration > MAX_DURATION_SECONDS:
-        os.remove(tmp_path)
-        raise AppError("VALIDATION_ERROR", f"File exceeds the {MAX_DURATION_SECONDS // 60} minute limit.", 422)
+    try:
+        duration = _probe_duration(tmp_path)
+        if duration > MAX_DURATION_SECONDS:
+            raise AppError("VALIDATION_ERROR", f"File exceeds the {MAX_DURATION_SECONDS // 60} minute limit.", 422)
+    except Exception:
+        if os.path.exists(tmp_path):
+            os.remove(tmp_path)
+        raise
 
     dr = DetectionRequest(
         user_id=current_user.id,

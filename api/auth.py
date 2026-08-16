@@ -92,6 +92,8 @@ def _get_or_create_oauth_user(db: Session, email: str, name: str | None) -> User
     elif name and not user.name:
         user.name = name
         db.commit()
+    if not user.is_active:
+        raise AppError("ACCOUNT_DEACTIVATED", "This account has been deactivated.", 403)
     return user
 
 
@@ -149,6 +151,8 @@ def signin(payload: SignInRequest, db: Session = Depends(get_db)):
     user = db.query(User).filter(User.email == payload.email).first()
     if not user or not user.hashed_password or not verify_password(payload.password, user.hashed_password):
         raise AppError("UNAUTHORIZED", "Invalid email or password.", 401)
+    if not user.is_active:
+        raise AppError("ACCOUNT_DEACTIVATED", "This account has been deactivated.", 403)
     return _issue_tokens(user, db)
 
 

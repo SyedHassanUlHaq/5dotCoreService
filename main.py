@@ -1,10 +1,14 @@
+import logging
 import os
 from contextlib import asynccontextmanager
 
 from dotenv import load_dotenv
 from fastapi import FastAPI, Request
+from fastapi.exceptions import RequestValidationError
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse
+from sqlalchemy.exc import IntegrityError
+from starlette.exceptions import HTTPException as StarletteHTTPException
 from starlette.middleware.sessions import SessionMiddleware
 
 from admin import setup_admin
@@ -12,6 +16,12 @@ from api import auth, detection_request, detection_webhooks, feedback, notificat
 from utils.errors import AppError
 
 load_dotenv()
+
+logging.basicConfig(
+    level=os.getenv("LOG_LEVEL", "INFO"),
+    format="%(asctime)s %(levelname)s %(name)s: %(message)s",
+)
+logger = logging.getLogger(__name__)
 
 
 @asynccontextmanager
@@ -32,12 +42,44 @@ app.add_middleware(
 )
 
 
+def _error_response(status_code: int, code: str, message: str) -> JSONResponse:
+    return JSONResponse(
+        status_code=status_code,
+        content={"error": {"code": code, "message": message, "statusCode": status_code}},
+    )
+
+
 @app.exception_handler(AppError)
 async def app_error_handler(_request: Request, exc: AppError):
-    return JSONResponse(
-        status_code=exc.status_code,
-        content={"error": {"code": exc.code, "message": exc.message, "statusCode": exc.status_code}},
-    )
+    return _error_response(exc.status_code, exc.code, exc.message)
+
+
+@app.exception_handler(RequestValidationError)
+async def validation_error_handler(_request: Request, exc: RequestValidationError):
+    first = exc.errors()[0] if exc.errors() else None
+    if first:
+        field = ".".join(str(p) for p in first["loc"] if p != "body")
+        message = f"{field}: {first['msg']}" if field else first["msg"]
+    else:
+        message = "Invalid request."
+    return _error_response(422, "VALIDATION_ERROR", message)
+
+
+@app.exception_handler(StarletteHTTPException)
+async def http_exception_handler(_request: Request, exc: StarletteHTTPException):
+    return _error_response(exc.status_code, "HTTP_ERROR", str(exc.detail))
+
+
+@app.exception_handler(IntegrityError)
+async def integrity_error_handler(request: Request, exc: IntegrityError):
+    logger.warning("Integrity error on %s %s: %s", request.method, request.url.path, exc)
+    return _error_response(409, "CONFLICT", "The request conflicts with existing data.")
+
+
+@app.exception_handler(Exception)
+async def unhandled_exception_handler(request: Request, exc: Exception):
+    logger.error("Unhandled error on %s %s", request.method, request.url.path, exc_info=exc)
+    return _error_response(500, "SERVER_ERROR", "Something went wrong. Please try again.")
 
 
 # Routes

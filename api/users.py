@@ -1,15 +1,21 @@
 import calendar
 from datetime import datetime, timezone
 
+import stripe
 from fastapi import APIRouter, Depends
 from sqlalchemy.orm import Session
 
-from config.project_config import MODEL_VERSION, PLAN_SCAN_LIMITS
+from config.project_config import MODEL_VERSION, PLAN_SCAN_LIMITS, STRIPE_SECRET_KEY
 from database import get_db
+from models.refresh_token import RefreshToken
+from models.subscription import Subscription
 from models.user import User
-from schemas.users import UpdateProfileRequest
+from schemas.users import DeactivateAccountRequest, DeleteAccountRequest, UpdateProfileRequest
 from utils.deps import get_current_user
 from utils.errors import AppError
+from utils.security import verify_password
+
+stripe.api_key = STRIPE_SECRET_KEY
 
 router = APIRouter()
 
@@ -67,3 +73,58 @@ def update_me(
     db.commit()
     db.refresh(current_user)
     return _user_response(current_user)
+
+
+def _check_password(user: User, password: str | None) -> None:
+    # OAuth-only users have no password to check; the bearer token already proves identity.
+    if user.hashed_password and (not password or not verify_password(password, user.hashed_password)):
+        raise AppError("UNAUTHORIZED", "Incorrect password.", 401)
+
+
+def _revoke_all_refresh_tokens(user: User, db: Session) -> None:
+    db.query(RefreshToken).filter(
+        RefreshToken.user_id == user.id, RefreshToken.revoked == False
+    ).update({"revoked": True})
+
+
+def _cancel_active_stripe_subscription(user: User, db: Session) -> None:
+    sub = (
+        db.query(Subscription)
+        .filter(Subscription.user_id == user.id, Subscription.status.in_(["active", "trialing"]))
+        .first()
+    )
+    if not sub or sub.platform != "stripe" or not sub.stripe_subscription_id:
+        return
+    try:
+        stripe.Subscription.delete(sub.stripe_subscription_id)
+    except stripe.error.StripeError:
+        pass
+
+
+@router.post("/me/deactivate")
+def deactivate_me(
+    payload: DeactivateAccountRequest,
+    current_user: User = Depends(get_current_user),
+    db: Session = Depends(get_db),
+):
+    _check_password(current_user, payload.password)
+
+    current_user.is_active = False
+    current_user.deactivated_at = datetime.now(timezone.utc)
+    _revoke_all_refresh_tokens(current_user, db)
+    db.commit()
+    return {"message": "Account deactivated."}
+
+
+@router.delete("/me", status_code=204)
+def delete_me(
+    payload: DeleteAccountRequest,
+    current_user: User = Depends(get_current_user),
+    db: Session = Depends(get_db),
+):
+    _check_password(current_user, payload.password)
+
+    _cancel_active_stripe_subscription(current_user, db)
+    db.delete(current_user)
+    db.commit()
+    return None

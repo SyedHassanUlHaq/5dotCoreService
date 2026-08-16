@@ -8,3 +8,11 @@ class UpdateProfileRequest(BaseModel):
     firstName: str | None = None
     lastName: str | None = None
     phoneNumber: str | None = None
+
+
+class DeactivateAccountRequest(BaseModel):
+    password: str | None = None
+
+
+class DeleteAccountRequest(BaseModel):
+    password: str | None = None
