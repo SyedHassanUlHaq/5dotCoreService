@@ -8,6 +8,7 @@ from starlette.requests import Request
 
 from database import engine
 from models.chunk import Chunk
+from models.crash_report import CrashReport
 from models.detection_request import DetectionRequest
 from models.feedback import Feedback
 from models.notification import Notification
@@ -44,7 +45,7 @@ class AdminAuth(AuthenticationBackend):
 
 class UserAdmin(ModelView, model=User):
     column_list = "__all__"
-    form_excluded_columns = [User.payments, User.refresh_tokens, User.scans, User.feedback, User.subscription, User.notifications]
+    form_excluded_columns = [User.payments, User.refresh_tokens, User.scans, User.feedback, User.subscription, User.notifications, User.crash_reports]
 
 
 class PaymentAdmin(ModelView, model=Payment):
@@ -77,6 +78,11 @@ class NotificationAdmin(ModelView, model=Notification):
     column_list = "__all__"
 
 
+class CrashReportAdmin(ModelView, model=CrashReport):
+    column_list = "__all__"
+    column_default_sort = ("created_at", True)
+
+
 def setup_admin(app: FastAPI) -> Admin:
     secret_key = os.getenv("SESSION_SECRET_KEY", "super-secret-key")
     admin = Admin(app, engine, authentication_backend=AdminAuth(secret_key=secret_key))
@@ -90,6 +96,7 @@ def setup_admin(app: FastAPI) -> Admin:
         FeedbackAdmin,
         SubscriptionAdmin,
         NotificationAdmin,
+        CrashReportAdmin,
     ):
         admin.add_view(view)
 
