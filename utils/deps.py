@@ -19,4 +19,6 @@ def get_current_user(
     user = db.query(User).filter(User.id == user_id).first()
     if not user:
         raise AppError("UNAUTHORIZED", "User not found.", 401)
+    if not user.is_active:
+        raise AppError("ACCOUNT_DEACTIVATED", "This account has been deactivated.", 403)
     return user

@@ -5,7 +5,7 @@ import os
 import uuid
 import stripe
 from datetime import datetime, timezone
-from fastapi import APIRouter, Request, HTTPException, Depends
+from fastapi import APIRouter, Request, Depends
 from pydantic import BaseModel
 from sqlalchemy.orm import Session
 from database import get_db
@@ -13,6 +13,7 @@ from models.detection_request import DetectionRequest
 from models.payments import Payment
 from models.subscription import Subscription
 from utils import apple_iap, google_play
+from utils.errors import AppError
 
 logger = logging.getLogger(__name__)
 
@@ -48,16 +49,16 @@ async def worker_webhook(payload: WorkerWebhookPayload, request: Request, db: Se
     if _WORKER_SECRET:
         token = request.headers.get("X-Worker-Secret", "")
         if token != _WORKER_SECRET:
-            raise HTTPException(status_code=401, detail="Unauthorized")
+            raise AppError("UNAUTHORIZED", "Invalid worker secret.", 401)
 
     try:
         job_uuid = uuid.UUID(payload.job_id)
     except ValueError:
-        raise HTTPException(status_code=422, detail="Invalid job_id")
+        raise AppError("VALIDATION_ERROR", "Invalid job_id.", 422)
 
     dr = db.query(DetectionRequest).filter(DetectionRequest.id == job_uuid).first()
     if not dr:
-        raise HTTPException(status_code=404, detail="Job not found")
+        raise AppError("NOT_FOUND", "Job not found.", 404)
 
     status_field = SERVICE_STATUS_FIELD.get(payload.service_name)
     if status_field:
@@ -86,13 +87,18 @@ async def stripe_webhook(request: Request, db: Session = Depends(get_db)):
             payload, sig_header, os.getenv("STRIPE_WEBHOOK_SECRET")
         )
     except Exception:
-        raise HTTPException(status_code=400, detail="Invalid Stripe signature")
+        logger.warning("Stripe webhook signature verification failed", exc_info=True)
+        raise AppError("VALIDATION_ERROR", "Invalid Stripe signature.", 400)
 
     if event["type"] == "payment_intent.succeeded":
         intent = event["data"]["object"]
 
         user_id = intent.metadata.get("user_id")
         order_id = intent.metadata.get("order_id")
+
+        if not user_id or not str(user_id).isdigit():
+            logger.warning("Stripe payment_intent.succeeded missing/invalid user_id metadata: intent=%s", intent.id)
+            return {"status": "ignored"}
 
         existing = db.query(Payment).filter_by(
             stripe_payment_intent_id=intent.id

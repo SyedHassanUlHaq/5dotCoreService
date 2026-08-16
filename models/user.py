@@ -1,4 +1,4 @@
-from sqlalchemy import Column, Integer, String, Float, DateTime, func
+from sqlalchemy import Column, Integer, String, Float, Boolean, DateTime, func
 from sqlalchemy.orm import relationship
 from database import Base
 
@@ -19,9 +19,11 @@ class User(Base):
     plan_reset_date = Column(DateTime(timezone=True), nullable=True)
     accuracy_rate = Column(Float, nullable=False, default=94.2)
     push_token = Column(String, nullable=True)   # Expo push token
+    is_active = Column(Boolean, nullable=False, default=True)
+    deactivated_at = Column(DateTime(timezone=True), nullable=True)
     created_at = Column(DateTime(timezone=True), server_default=func.now())
 
-    payments = relationship("Payment", back_populates="user")
+    payments = relationship("Payment", back_populates="user", cascade="all, delete-orphan")
     refresh_tokens = relationship("RefreshToken", back_populates="user", cascade="all, delete-orphan")
     scans = relationship("DetectionRequest", back_populates="user", cascade="all, delete-orphan")
     feedback = relationship("Feedback", back_populates="user", cascade="all, delete-orphan")
