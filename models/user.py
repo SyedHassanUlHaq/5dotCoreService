@@ -30,3 +30,4 @@ class User(Base):
     subscription = relationship("Subscription", back_populates="user", uselist=False, cascade="all, delete-orphan")
     notifications = relationship("Notification", back_populates="user", cascade="all, delete-orphan")
     crash_reports = relationship("CrashReport", back_populates="user")
+    bug_reports = relationship("BugReport", back_populates="user")
