@@ -9,6 +9,7 @@ overall request is marked done and the user is notified.
   POST /lipsync_trigger   -> lipsync
 """
 
+import logging
 import os
 import secrets
 import uuid
@@ -18,6 +19,7 @@ from fastapi import APIRouter, Depends, Header
 from sqlalchemy.orm import Session
 
 from api.detection_request import STATUS_FIELD_BY_TYPE, _requested_types_of
+from config.project_config import DEFAULT_DETECTION_THRESHOLD
 from database import get_db
 from models.detection_request import DetectionRequest
 from models.notification import Notification
@@ -25,6 +27,8 @@ from schemas.detection_webhooks import DetectionWebhookPayload
 from utils.errors import AppError
 from utils.notification_templates import NOTIFICATION_TEMPLATES
 from utils.push import send_push
+
+logger = logging.getLogger(__name__)
 
 router = APIRouter()
 
@@ -74,8 +78,18 @@ def _handle_completion(detection_type: str, payload: DetectionWebhookPayload, db
     setattr(dr, STATUS_FIELD_BY_TYPE[detection_type], "failed" if failed else "complete")
 
     if payload.result:
+        result = dict(payload.result)
+        if "score" in result and "threshold" not in result:
+            default = DEFAULT_DETECTION_THRESHOLD.get(detection_type, 0.5)
+            logger.warning(
+                "Webhook for %s (%s) sent a score with no threshold — backfilling default %.2f. "
+                "This worker's payload is missing a field the others send; worth fixing upstream.",
+                payload.job_id, detection_type, default,
+            )
+            result["threshold"] = default
+
         result_data = dr.result_data or {}
-        result_data[detection_type] = payload.result
+        result_data[detection_type] = result
         dr.result_data = result_data
 
     if failed:
