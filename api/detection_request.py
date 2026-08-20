@@ -9,7 +9,7 @@ import subprocess
 import tempfile
 import uuid
 from datetime import datetime, timezone, timedelta
-from urllib.parse import urlparse
+from urllib.parse import urlparse, unquote
 
 import requests
 import yt_dlp
@@ -81,6 +81,19 @@ def _check_quota(user: User):
 def _is_supported_url(url: str) -> bool:
     host = (urlparse(url).hostname or "").lower()
     return host in ALLOWED_URL_HOSTS
+
+
+def _clean_filename(name: str) -> str:
+    """Some Android content providers hand the app a percent-encoded display
+    name (e.g. "My%20File.mp4") instead of the real one, and it gets sent
+    verbatim as the multipart filename — decode it once here so it's clean
+    everywhere downstream (admin panel, PDF report, any future API read),
+    not just wherever a caller happens to remember to decode it."""
+    try:
+        decoded = unquote(name)
+    except Exception:
+        return name
+    return decoded if decoded else name
 
 
 def _probe_duration(path: str) -> float:
@@ -356,7 +369,7 @@ async def create_detection_request(
 
     dr = DetectionRequest(
         user_id=current_user.id,
-        filename=file.filename or "upload",
+        filename=_clean_filename(file.filename) if file.filename else "upload",
         file_size=total_size,
         duration=duration,
         detect_ai_audio=detectAiAudio,
@@ -613,7 +626,7 @@ def get_forensic_report_pdf(
 
     pdf_bytes = build_forensic_pdf(dr, chunks, _requested_types_of(dr))
 
-    safe_name = "".join(c if c.isalnum() or c in "._-" else "_" for c in (dr.filename or "scan"))
+    safe_name = "".join(c if c.isalnum() or c in "._-" else "_" for c in _clean_filename(dr.filename or "scan"))
     return Response(
         content=pdf_bytes,
         media_type="application/pdf",

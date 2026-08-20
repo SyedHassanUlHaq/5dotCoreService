@@ -15,6 +15,7 @@ this look like a produced report instead of a debug dump.
 
 import io
 from datetime import datetime, timezone
+from urllib.parse import unquote
 
 from reportlab.lib import colors
 from reportlab.lib.pagesizes import letter
@@ -94,6 +95,17 @@ def _styles():
     styles.add(ParagraphStyle("TableCell", parent=styles["ReportBody"], fontSize=9))
     styles.add(ParagraphStyle("MethodText", parent=styles["ReportBody"], fontSize=9, textColor=MUTED, leading=13))
     return styles
+
+
+def _clean_filename(name: str) -> str:
+    """Belt-and-suspenders: create_detection_request now decodes at upload
+    time, but scans stored before that fix still have a raw percent-encoded
+    name in the database — decode again here so old reports render clean too."""
+    try:
+        decoded = unquote(name)
+    except Exception:
+        return name
+    return decoded if decoded else name
 
 
 def _fmt_dt(dt: datetime | None) -> str:
@@ -256,10 +268,11 @@ def build_forensic_pdf(dr, chunks: list, requested_types: list[str]) -> bytes:
     requested_types: from _requested_types_of(dr), canonical order."""
     styles = _styles()
     buf = io.BytesIO()
+    filename = _clean_filename(dr.filename)
 
     frame = Frame(MARGIN, 0.7 * inch, PAGE_W - 2 * MARGIN, PAGE_H - 1.55 * inch, id="body")
     doc = BaseDocTemplate(
-        buf, pagesize=letter, title=f"Forensic Report — {dr.filename}",
+        buf, pagesize=letter, title=f"Forensic Report — {filename}",
         topMargin=1.0 * inch, bottomMargin=0.7 * inch, leftMargin=MARGIN, rightMargin=MARGIN,
     )
     doc.addPageTemplates([PageTemplate(id="report", frames=[frame])])
@@ -271,7 +284,7 @@ def build_forensic_pdf(dr, chunks: list, requested_types: list[str]) -> bytes:
     story = []
 
     # ── Title block ──────────────────────────────────────────────────────
-    story.append(Paragraph(dr.filename, ParagraphStyle(
+    story.append(Paragraph(filename, ParagraphStyle(
         "Title", parent=styles["ReportBody"], fontSize=17, fontName="Helvetica-Bold", leading=21,
     )))
     story.append(Paragraph(
