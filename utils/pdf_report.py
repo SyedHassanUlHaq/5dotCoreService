@@ -372,7 +372,7 @@ def build_forensic_pdf(dr, chunks: list, requested_types: list[str]) -> bytes:
             flagged = payload["score"] >= payload.get("threshold", default_threshold)
             rows.append([
                 Paragraph(DETECTION_LABELS.get(kind, kind), styles["TableCell"]),
-                _verdict_badge(styles, "FLAGGED" if flagged else "CLEAR", AI_HEX if flagged else AUTHENTIC_HEX),
+                _verdict_badge(styles, "FLAGGED" if flagged else "NOT FLAGGED", AI_HEX if flagged else AUTHENTIC_HEX),
                 Paragraph(f"{payload['score'] * 100:.1f}%", styles["TableCell"]),
                 Paragraph(f"{payload.get('threshold', default_threshold) * 100:.0f}%", styles["TableCell"]),
             ])
@@ -421,7 +421,7 @@ def build_forensic_pdf(dr, chunks: list, requested_types: list[str]) -> bytes:
         # Stat card row: verdict, score, segments analyzed, segments flagged
         vals = [s[2] for s in segment_scores] or [score]
         cards = [
-            _stat_card(styles, "Verdict", "Flagged" if flagged else "Clear", 118),
+            _stat_card(styles, "Verdict", "Flagged" if flagged else "Not flagged", 118),
             _stat_card(styles, "Overall score", f"{score * 100:.1f}%", 118),
             _stat_card(styles, "Peak segment", f"{max(vals) * 100:.1f}%", 118),
             _stat_card(styles, "Segments analyzed", str(len(segment_scores)) if segment_scores else "1", 118),
