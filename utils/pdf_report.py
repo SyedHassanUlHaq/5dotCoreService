@@ -7,10 +7,12 @@ need for the async job/poll pattern the request/response cycle already
 proved out for detection itself.
 
 The score-over-time chart is hand-drawn with primitive shapes rather than
-reportlab's stock VerticalBarChart widget — the widget's chunky evenly-
-spaced bars and rotated labels read as a spreadsheet auto-chart. Full
-control over gridlines, bar geometry, and label placement is what makes
-this look like a produced report instead of a debug dump.
+reportlab's stock chart widgets — full control over gridlines, point
+placement, and label spacing is what makes this look like a produced
+report instead of a debug dump. It's a line chart plotted from the real
+per-chunk scores in detection_chunks (5-second segments from the AI
+workers) — points are placed by actual elapsed time, not interpolated to
+a finer resolution the workers don't actually produce.
 """
 
 import io
@@ -27,7 +29,7 @@ from reportlab.platypus import (
     BaseDocTemplate, PageTemplate, Frame, Paragraph, Spacer, Table, TableStyle,
     HRFlowable, KeepTogether,
 )
-from reportlab.graphics.shapes import Drawing, Rect, Line, String
+from reportlab.graphics.shapes import Drawing, Line, String, PolyLine, Circle
 
 from config.project_config import MODEL_VERSION, DEFAULT_DETECTION_THRESHOLD
 
@@ -70,7 +72,10 @@ DETECTION_METHODOLOGY = {
 CHUNK_SCORE_FIELD = {
     "ai_audio": "ai_audio_score",
     "ai_video": "ai_video_score",
-    "lipsync": "lipsync_score",
+    # Normalized property, not the raw column — the lipsync worker writes
+    # its per-chunk score on a 0-100 scale, unlike ai_audio/ai_video's 0-1.
+    # See models.chunk.Chunk.lipsync_score_normalized.
+    "lipsync": "lipsync_score_normalized",
 }
 
 
@@ -184,7 +189,9 @@ class _ReportCanvas(pdfcanvas.Canvas):
 
 
 def _score_chart(segments: list[tuple[float, float, float]], threshold: float, accent_hex: str) -> Drawing:
-    """Hand-drawn bar chart: gridlines, precise bar geometry, sparse labels."""
+    """Hand-drawn line chart: gridlines, a real time-proportional x-axis,
+    connected segment scores, sparse labels. Each point is one real scored
+    chunk from detection_chunks — no interpolation between them."""
     W, H = 460, 150
     plot_x, plot_y = 46, 34
     plot_w, plot_h = 400, 92
@@ -205,21 +212,28 @@ def _score_chart(segments: list[tuple[float, float, float]], threshold: float, a
     d.add(String(plot_x + plot_w, thr_y + 3, f"Threshold {threshold * 100:.0f}%",
                   fontSize=6.5, fillColor=colors.HexColor("#B45309"), textAnchor="end"))
 
-    # Bars
+    # Line + markers, positioned by real elapsed time (not by index), so
+    # geometry stays correct even if a worker returns uneven chunk lengths.
     n = len(segments)
-    gap = 3
-    bar_w = min(18, (plot_w - gap * (n - 1)) / n) if n else 0
-    total_bars_w = n * bar_w + (n - 1) * gap
-    start_x = plot_x + (plot_w - total_bars_w) / 2
+    max_t = max((s[1] for s in segments), default=1) or 1
+    xy = [
+        (plot_x + (seg_start / max_t) * plot_w, plot_y + max(0.0, min(1.0, score)) * plot_h, score)
+        for seg_start, _seg_end, score in segments
+    ]
+
+    if len(xy) > 1:
+        flat_points = [coord for x, y, _score in xy for coord in (x, y)]
+        d.add(PolyLine(flat_points, strokeColor=accent, strokeWidth=1.5, strokeLineJoin=1))
+
+    for x, y, score in xy:
+        fill = accent if score >= threshold else colors.white
+        d.add(Circle(x, y, 2.4, fillColor=fill, strokeColor=accent, strokeWidth=1))
 
     label_every = max(1, round(n / 8))
-    for i, (seg_start, _seg_end, score) in enumerate(segments):
-        x = start_x + i * (bar_w + gap)
-        bar_h = max(1.5, score * plot_h)
-        fill = accent if score >= threshold else colors.HexColor(accent_hex + "80")
-        d.add(Rect(x, plot_y, bar_w, bar_h, fillColor=fill, strokeColor=None))
+    for i, (seg_start, _seg_end, _score) in enumerate(segments):
         if i % label_every == 0 or i == n - 1:
-            d.add(String(x + bar_w / 2, plot_y - 12, _fmt_seconds(seg_start),
+            x = plot_x + (seg_start / max_t) * plot_w
+            d.add(String(x, plot_y - 12, _fmt_seconds(seg_start),
                           fontSize=6, fillColor=MUTED, textAnchor="middle"))
 
     # Axis line

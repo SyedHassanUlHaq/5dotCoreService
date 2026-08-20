@@ -588,7 +588,7 @@ def get_detection_request(
                 "segmentEnd": c.segment_end,
                 "aiAudioScore": c.ai_audio_score,
                 "aiVideoScore": c.ai_video_score,
-                "lipsyncScore": c.lipsync_score,
+                "lipsyncScore": c.lipsync_score_normalized,
                 "changesPoints": c.changes_points,
             }
             for c in chunks
