@@ -28,7 +28,7 @@ from reportlab.platypus import (
 )
 from reportlab.graphics.shapes import Drawing, Rect, Line, String
 
-from config.project_config import MODEL_VERSION
+from config.project_config import MODEL_VERSION, DEFAULT_DETECTION_THRESHOLD
 
 PAGE_W, PAGE_H = letter
 MARGIN = 0.75 * inch
@@ -283,7 +283,8 @@ def build_forensic_pdf(dr, chunks: list, requested_types: list[str]) -> bytes:
     # ── Executive summary ───────────────────────────────────────────────
     if headline:
         kind, payload = headline
-        flagged = payload["score"] >= payload.get("threshold", 0.5)
+        default_threshold = DEFAULT_DETECTION_THRESHOLD.get(kind, 0.5)
+        flagged = payload["score"] >= payload.get("threshold", default_threshold)
         verdict_text = "AI-GENERATED / TAMPERED" if flagged else "NO MANIPULATION DETECTED"
         verdict_hex = AI_HEX if flagged else AUTHENTIC_HEX
         exec_left = [
@@ -293,7 +294,8 @@ def build_forensic_pdf(dr, chunks: list, requested_types: list[str]) -> bytes:
             Spacer(1, 3),
             Paragraph(
                 f"Highest-confidence signal: {DETECTION_LABELS.get(kind, kind)} "
-                f"at {payload['score'] * 100:.1f}% (flagging threshold {payload.get('threshold', 0.5) * 100:.0f}%).",
+                f"at {payload['score'] * 100:.1f}% "
+                f"(flagging threshold {payload.get('threshold', default_threshold) * 100:.0f}%).",
                 styles["ExecSub"],
             ),
         ]
@@ -339,12 +341,13 @@ def build_forensic_pdf(dr, chunks: list, requested_types: list[str]) -> bytes:
         head = [Paragraph(h, styles["TableHeadCell"]) for h in ("Detection", "Verdict", "Score", "Threshold")]
         rows = [head]
         for kind, payload in all_results:
-            flagged = payload["score"] >= payload.get("threshold", 0.5)
+            default_threshold = DEFAULT_DETECTION_THRESHOLD.get(kind, 0.5)
+            flagged = payload["score"] >= payload.get("threshold", default_threshold)
             rows.append([
                 Paragraph(DETECTION_LABELS.get(kind, kind), styles["TableCell"]),
                 _verdict_badge(styles, "FLAGGED" if flagged else "CLEAR", AI_HEX if flagged else AUTHENTIC_HEX),
                 Paragraph(f"{payload['score'] * 100:.1f}%", styles["TableCell"]),
-                Paragraph(f"{payload.get('threshold', 0.5) * 100:.0f}%", styles["TableCell"]),
+                Paragraph(f"{payload.get('threshold', default_threshold) * 100:.0f}%", styles["TableCell"]),
             ])
         summary_table = Table(rows, colWidths=[190, 120, 80, 80])
         summary_table.setStyle(TableStyle([
@@ -376,7 +379,7 @@ def build_forensic_pdf(dr, chunks: list, requested_types: list[str]) -> bytes:
             continue
 
         score = payload["score"]
-        threshold = payload.get("threshold", 0.5)
+        threshold = payload.get("threshold", DEFAULT_DETECTION_THRESHOLD.get(kind, 0.5))
         flagged = score >= threshold
         verdict_hex = AI_HEX if flagged else AUTHENTIC_HEX
 
