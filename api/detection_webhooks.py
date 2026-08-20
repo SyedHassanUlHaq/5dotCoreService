@@ -22,7 +22,7 @@ from sqlalchemy.orm.attributes import flag_modified
 from api.detection_request import STATUS_FIELD_BY_TYPE, _requested_types_of
 from config.project_config import DEFAULT_DETECTION_THRESHOLD
 from database import get_db
-from models.chunk import Chunk
+from models.chunk import Chunk, normalize_lipsync_score
 from models.detection_request import DetectionRequest
 from models.notification import Notification
 from schemas.detection_webhooks import DetectionWebhookPayload
@@ -128,6 +128,13 @@ def _handle_completion(detection_type: str, payload: DetectionWebhookPayload, db
 
     if payload.result:
         result = dict(payload.result)
+        if detection_type == "lipsync" and "score" in result:
+            # Same match-vs-risk inversion as Chunk.lipsync_score_normalized
+            # (models/chunk.py) — applied here too in case this worker ever
+            # sends a top-level score directly instead of only chunk data.
+            result["score"] = normalize_lipsync_score(result["score"])
+            if "threshold" in result:
+                result["threshold"] = normalize_lipsync_score(result["threshold"])
         if "score" in result and "threshold" not in result:
             default = DEFAULT_DETECTION_THRESHOLD.get(detection_type, 0.5)
             logger.warning(
