@@ -31,3 +31,15 @@ class Chunk(Base):
     created_at = Column(DateTime(timezone=True), server_default=func.now())
 
     detection_request = relationship("DetectionRequest", back_populates="chunks")
+
+    @property
+    def lipsync_score_normalized(self) -> float | None:
+        """The lipsync worker writes its per-chunk score already scaled
+        0-100 (confirmed across every stored row), unlike the ai_audio/
+        ai_video workers which write 0-1 fractions — same worker-payload-
+        inconsistency pattern as the ai_audio missing-threshold bug. Every
+        consumer should read through this instead of the raw column so
+        they don't each have to know about the quirk."""
+        if self.lipsync_score is None:
+            return None
+        return self.lipsync_score / 100 if self.lipsync_score > 1 else self.lipsync_score
