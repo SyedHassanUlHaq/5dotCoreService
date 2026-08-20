@@ -547,6 +547,13 @@ def get_detection_request(
     if not dr:
         raise AppError("NOT_FOUND", "Scan not found.", 404)
 
+    chunks = (
+        db.query(Chunk)
+        .filter(Chunk.detection_request_id == dr.id)
+        .order_by(Chunk.chunk_index)
+        .all()
+    )
+
     return {
         "requestId": str(dr.id),
         "filename": dr.filename,
@@ -557,6 +564,21 @@ def get_detection_request(
         "errorMessage": dr.error_message,
         "createdAt": dr.created_at.isoformat() if dr.created_at else None,
         "completedAt": dr.completed_at.isoformat() if dr.completed_at else None,
+        # Per-segment breakdown the worker fills in while scoring — stored
+        # in detection_chunks but never returned anywhere before, so the
+        # app only ever showed the single overall score/verdict.
+        "chunks": [
+            {
+                "chunkIndex": c.chunk_index,
+                "segmentStart": c.segment_start,
+                "segmentEnd": c.segment_end,
+                "aiAudioScore": c.ai_audio_score,
+                "aiVideoScore": c.ai_video_score,
+                "lipsyncScore": c.lipsync_score,
+                "changesPoints": c.changes_points,
+            }
+            for c in chunks
+        ],
     }
 
 
