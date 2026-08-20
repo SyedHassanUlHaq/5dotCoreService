@@ -13,7 +13,7 @@ from urllib.parse import urlparse
 
 import requests
 import yt_dlp
-from fastapi import APIRouter, BackgroundTasks, Depends, UploadFile, File, Form, Query
+from fastapi import APIRouter, BackgroundTasks, Depends, UploadFile, File, Form, Query, Response
 from sqlalchemy.orm import Session
 
 from config.project_config import PLAN_SCAN_LIMITS, YOUTUBE_API_KEY
@@ -23,6 +23,7 @@ from models.detection_request import DetectionRequest
 from models.user import User
 from utils.deps import get_current_user
 from utils.errors import AppError
+from utils.pdf_report import build_forensic_pdf
 from utils.s3 import upload_file
 from utils.sqs import enqueue_scan
 
@@ -580,6 +581,44 @@ def get_detection_request(
             for c in chunks
         ],
     }
+
+
+@router.get("/{request_id}/report.pdf")
+def get_forensic_report_pdf(
+    request_id: str,
+    current_user: User = Depends(get_current_user),
+    db: Session = Depends(get_db),
+):
+    try:
+        rid = uuid.UUID(request_id)
+    except ValueError:
+        raise AppError("NOT_FOUND", "Scan not found.", 404)
+
+    dr = db.query(DetectionRequest).filter(
+        DetectionRequest.id == rid,
+        DetectionRequest.user_id == current_user.id,
+    ).first()
+    if not dr:
+        raise AppError("NOT_FOUND", "Scan not found.", 404)
+
+    if dr.status != "complete":
+        raise AppError("NOT_READY", "This analysis hasn't finished yet — the report isn't available until it completes.", 409)
+
+    chunks = (
+        db.query(Chunk)
+        .filter(Chunk.detection_request_id == dr.id)
+        .order_by(Chunk.chunk_index)
+        .all()
+    )
+
+    pdf_bytes = build_forensic_pdf(dr, chunks, _requested_types_of(dr))
+
+    safe_name = "".join(c if c.isalnum() or c in "._-" else "_" for c in (dr.filename or "scan"))
+    return Response(
+        content=pdf_bytes,
+        media_type="application/pdf",
+        headers={"Content-Disposition": f'attachment; filename="{safe_name}_report.pdf"'},
+    )
 
 
 _STAGE_NAMES = ["decoding_stream", "spectral_analysis", "frame_coherence", "cross_check_model"]
