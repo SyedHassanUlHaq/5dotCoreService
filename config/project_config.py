@@ -65,6 +65,21 @@ WHATSAPP_OTP_TEMPLATE_NAME = os.getenv("WHATSAPP_OTP_TEMPLATE_NAME", "otp_verifi
 # --- Model metadata (surfaced in user/stats responses) ---
 MODEL_VERSION = os.getenv("MODEL_VERSION", "v3.2")
 
+# --- Detection thresholds ---
+# The ai_video worker reliably sends its own `threshold` in the webhook
+# payload (currently always 0.5). The ai_audio worker never has — every
+# stored ai_audio result is missing the key entirely. These are the
+# fallback used when a worker's payload omits it; detection_webhooks.py
+# backfills this into result_data at write time (and logs when it does,
+# so a fixed upstream payload is visible in the logs), and readers fall
+# back to it too for rows written before that backfill existed.
+DEFAULT_DETECTION_THRESHOLD: dict[str, float] = {
+    "ai_audio": 0.5,
+    "ai_video": 0.5,
+    "lipsync": 0.5,
+    "changes": 0.5,
+}
+
 # --- Plan limits ---
 PLAN_SCAN_LIMITS: dict[str, int | None] = {
     "free": 50,
