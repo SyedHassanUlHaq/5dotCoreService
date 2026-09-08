@@ -9,11 +9,11 @@ import subprocess
 import tempfile
 import uuid
 from datetime import datetime, timezone, timedelta
-from urllib.parse import urlparse
+from urllib.parse import urlparse, unquote
 
 import requests
 import yt_dlp
-from fastapi import APIRouter, BackgroundTasks, Depends, UploadFile, File, Form, Query
+from fastapi import APIRouter, BackgroundTasks, Depends, UploadFile, File, Form, Query, Response
 from sqlalchemy.orm import Session
 
 from config.project_config import PLAN_SCAN_LIMITS, YOUTUBE_API_KEY
@@ -23,6 +23,7 @@ from models.detection_request import DetectionRequest
 from models.user import User
 from utils.deps import get_current_user
 from utils.errors import AppError
+from utils.pdf_report import build_forensic_pdf
 from utils.s3 import upload_file
 from utils.sqs import enqueue_scan
 
@@ -80,6 +81,19 @@ def _check_quota(user: User):
 def _is_supported_url(url: str) -> bool:
     host = (urlparse(url).hostname or "").lower()
     return host in ALLOWED_URL_HOSTS
+
+
+def _clean_filename(name: str) -> str:
+    """Some Android content providers hand the app a percent-encoded display
+    name (e.g. "My%20File.mp4") instead of the real one, and it gets sent
+    verbatim as the multipart filename — decode it once here so it's clean
+    everywhere downstream (admin panel, PDF report, any future API read),
+    not just wherever a caller happens to remember to decode it."""
+    try:
+        decoded = unquote(name)
+    except Exception:
+        return name
+    return decoded if decoded else name
 
 
 def _probe_duration(path: str) -> float:
@@ -392,7 +406,7 @@ async def create_detection_request(
 
     dr = DetectionRequest(
         user_id=current_user.id,
-        filename=file.filename or "upload",
+        filename=_clean_filename(file.filename) if file.filename else "upload",
         file_size=total_size,
         duration=duration,
         detect_ai_audio=detectAiAudio,
@@ -584,6 +598,13 @@ def get_detection_request(
     if not dr:
         raise AppError("NOT_FOUND", "Scan not found.", 404)
 
+    chunks = (
+        db.query(Chunk)
+        .filter(Chunk.detection_request_id == dr.id)
+        .order_by(Chunk.chunk_index)
+        .all()
+    )
+
     return {
         "requestId": str(dr.id),
         "filename": dr.filename,
@@ -594,7 +615,60 @@ def get_detection_request(
         "errorMessage": dr.error_message,
         "createdAt": dr.created_at.isoformat() if dr.created_at else None,
         "completedAt": dr.completed_at.isoformat() if dr.completed_at else None,
+        # Per-segment breakdown the worker fills in while scoring — stored
+        # in detection_chunks but never returned anywhere before, so the
+        # app only ever showed the single overall score/verdict.
+        "chunks": [
+            {
+                "chunkIndex": c.chunk_index,
+                "segmentStart": c.segment_start,
+                "segmentEnd": c.segment_end,
+                "aiAudioScore": c.ai_audio_score,
+                "aiVideoScore": c.ai_video_score,
+                "lipsyncScore": c.lipsync_score_normalized,
+                "changesPoints": c.changes_points,
+            }
+            for c in chunks
+        ],
     }
+
+
+@router.get("/{request_id}/report.pdf")
+def get_forensic_report_pdf(
+    request_id: str,
+    current_user: User = Depends(get_current_user),
+    db: Session = Depends(get_db),
+):
+    try:
+        rid = uuid.UUID(request_id)
+    except ValueError:
+        raise AppError("NOT_FOUND", "Scan not found.", 404)
+
+    dr = db.query(DetectionRequest).filter(
+        DetectionRequest.id == rid,
+        DetectionRequest.user_id == current_user.id,
+    ).first()
+    if not dr:
+        raise AppError("NOT_FOUND", "Scan not found.", 404)
+
+    if dr.status != "complete":
+        raise AppError("NOT_READY", "This analysis hasn't finished yet — the report isn't available until it completes.", 409)
+
+    chunks = (
+        db.query(Chunk)
+        .filter(Chunk.detection_request_id == dr.id)
+        .order_by(Chunk.chunk_index)
+        .all()
+    )
+
+    pdf_bytes = build_forensic_pdf(dr, chunks, _requested_types_of(dr))
+
+    safe_name = "".join(c if c.isalnum() or c in "._-" else "_" for c in _clean_filename(dr.filename or "scan"))
+    return Response(
+        content=pdf_bytes,
+        media_type="application/pdf",
+        headers={"Content-Disposition": f'attachment; filename="{safe_name}_report.pdf"'},
+    )
 
 
 _STAGE_NAMES = ["decoding_stream", "spectral_analysis", "frame_coherence", "cross_check_model"]

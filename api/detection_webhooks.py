@@ -9,6 +9,7 @@ overall request is marked done and the user is notified.
   POST /lipsync_trigger   -> lipsync
 """
 
+import logging
 import os
 import secrets
 import uuid
@@ -16,9 +17,12 @@ from datetime import datetime, timezone
 
 from fastapi import APIRouter, Depends, Header
 from sqlalchemy.orm import Session
+from sqlalchemy.orm.attributes import flag_modified
 
 from api.detection_request import STATUS_FIELD_BY_TYPE, _requested_types_of
+from config.project_config import DEFAULT_DETECTION_THRESHOLD
 from database import get_db
+from models.chunk import Chunk, normalize_lipsync_score
 from models.detection_request import DetectionRequest
 from models.notification import Notification
 from schemas.detection_webhooks import DetectionWebhookPayload
@@ -26,9 +30,58 @@ from utils.errors import AppError
 from utils.notification_templates import NOTIFICATION_TEMPLATES
 from utils.push import send_push
 
+logger = logging.getLogger(__name__)
+
 router = APIRouter()
 
 WEBHOOK_SECRET = os.environ.get("WEBHOOK_SECRET", "")
+
+# Same mapping as utils/pdf_report.py's CHUNK_SCORE_FIELD — kept as a
+# separate copy since it's a different module's concern, but the lipsync
+# entry must stay in sync: it reads through the normalized property since
+# that worker writes its per-chunk score on a 0-100 scale, not 0-1.
+CHUNK_RESULT_FIELD = {
+    "ai_audio": "ai_audio_score",
+    "ai_video": "ai_video_score",
+    "lipsync": "lipsync_score_normalized",
+}
+
+
+def _derive_result_from_chunks(db: Session, dr: DetectionRequest, detection_type: str) -> dict | None:
+    """Fallback for a worker whose completion webhook includes no `result`
+    payload at all (confirmed happening for every real lipsync scan so far —
+    its webhook only ever signals bare completion). The per-chunk scores it
+    already wrote to detection_chunks are still real, so build a result from
+    those instead of showing nothing.
+
+    Uses the peak (max) segment score, not an average: for a forensic flag,
+    one strong incriminating segment should drive the verdict, not get
+    diluted by a long clean stretch either side of it.
+    """
+    field = CHUNK_RESULT_FIELD.get(detection_type)
+    if not field:
+        return None
+    chunks = db.query(Chunk).filter(Chunk.detection_request_id == dr.id).all()
+    scores = [v for c in chunks if (v := getattr(c, field, None)) is not None]
+    if not scores:
+        return None
+    return {"score": max(scores), "threshold": DEFAULT_DETECTION_THRESHOLD.get(detection_type, 0.5)}
+
+
+def _set_result(dr: DetectionRequest, detection_type: str, result: dict):
+    """result_data is a plain JSONB column (no MutableDict tracking), so
+    mutating the existing dict in place and reassigning it is a no-op as far
+    as SQLAlchemy's change-tracking is concerned — the attribute's identity
+    never changes, so the write silently never reaches the database. This
+    was confirmed to bite every multi-type scan: whichever detection type's
+    webhook landed first persisted fine (result_data was still None, so the
+    assignment really was a new object), and every type after it was
+    silently dropped. flag_modified forces SQLAlchemy to write it anyway.
+    """
+    result_data = dr.result_data or {}
+    result_data[detection_type] = result
+    dr.result_data = result_data
+    flag_modified(dr, "result_data")
 
 
 def _verify_secret(x_webhook_secret: str | None = Header(None)):
@@ -74,9 +127,34 @@ def _handle_completion(detection_type: str, payload: DetectionWebhookPayload, db
     setattr(dr, STATUS_FIELD_BY_TYPE[detection_type], "failed" if failed else "complete")
 
     if payload.result:
-        result_data = dr.result_data or {}
-        result_data[detection_type] = payload.result
-        dr.result_data = result_data
+        result = dict(payload.result)
+        if detection_type == "lipsync" and "score" in result:
+            # Same match-vs-risk inversion as Chunk.lipsync_score_normalized
+            # (models/chunk.py) — applied here too in case this worker ever
+            # sends a top-level score directly instead of only chunk data.
+            result["score"] = normalize_lipsync_score(result["score"])
+            if "threshold" in result:
+                result["threshold"] = normalize_lipsync_score(result["threshold"])
+        if "score" in result and "threshold" not in result:
+            default = DEFAULT_DETECTION_THRESHOLD.get(detection_type, 0.5)
+            logger.warning(
+                "Webhook for %s (%s) sent a score with no threshold — backfilling default %.2f. "
+                "This worker's payload is missing a field the others send; worth fixing upstream.",
+                payload.job_id, detection_type, default,
+            )
+            result["threshold"] = default
+
+        _set_result(dr, detection_type, result)
+    elif not failed:
+        derived = _derive_result_from_chunks(db, dr, detection_type)
+        if derived:
+            logger.warning(
+                "Webhook for %s (%s) completed with no result payload at all — "
+                "deriving a score of %.2f from its scored chunks instead. "
+                "This worker's payload is missing the result entirely; worth fixing upstream.",
+                payload.job_id, detection_type, derived["score"],
+            )
+            _set_result(dr, detection_type, derived)
 
     if failed:
         note = f"{detection_type} failed"
