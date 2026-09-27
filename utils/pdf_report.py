@@ -244,6 +244,34 @@ def _score_chart(segments: list[tuple[float, float, float]], threshold: float, a
     return d
 
 
+def _segment_table(styles, segments: list[tuple[float, float, float]], threshold: float) -> Table:
+    """One row per scored chunk — the same data points as _score_chart, in
+    numbers. The header repeats if the table runs onto another page."""
+    head = [Paragraph(h, styles["TableHeadCell"]) for h in ("Segment", "Time range", "Score", "Result")]
+    rows = [head]
+    for i, (seg_start, seg_end, score) in enumerate(segments, start=1):
+        flagged = score >= threshold
+        rows.append([
+            Paragraph(str(i), styles["TableCell"]),
+            Paragraph(f"{_fmt_seconds(seg_start)} – {_fmt_seconds(seg_end)}", styles["TableCell"]),
+            Paragraph(f"{score * 100:.1f}%", styles["TableCell"]),
+            Paragraph(
+                f'<font color="{AI_HEX if flagged else AUTHENTIC_HEX}"><b>{"Flagged" if flagged else "Not flagged"}</b></font>',
+                styles["TableCell"],
+            ),
+        ])
+    t = Table(rows, colWidths=[70, 150, 90, 120], repeatRows=1)
+    t.setStyle(TableStyle([
+        ("BACKGROUND", (0, 0), (-1, 0), BRAND),
+        ("VALIGN", (0, 0), (-1, -1), "MIDDLE"),
+        ("TOPPADDING", (0, 0), (-1, -1), 4),
+        ("BOTTOMPADDING", (0, 0), (-1, -1), 4),
+        ("LINEBELOW", (0, 0), (-1, -2), 0.5, CARD_BORDER),
+        ("ROWBACKGROUNDS", (0, 1), (-1, -1), [colors.white, CARD_BG]),
+    ]))
+    return t
+
+
 def _stat_card(styles, label: str, value: str, width: float) -> Table:
     t = Table(
         [[Paragraph(label.upper(), styles["CardLabel"])], [Paragraph(value, styles["CardValue"])]],
@@ -437,6 +465,12 @@ def build_forensic_pdf(dr, chunks: list, requested_types: list[str]) -> bytes:
             )))
             section.append(Spacer(1, 4))
             section.append(_score_chart(segment_scores, threshold, verdict_hex))
+            section.append(Spacer(1, 10))
+            section.append(Paragraph("Score per segment", ParagraphStyle(
+                "TableTitle", parent=styles["ReportBody"], fontSize=8.5, fontName="Helvetica-Bold", textColor=MUTED,
+            )))
+            section.append(Spacer(1, 4))
+            section.append(_segment_table(styles, segment_scores, threshold))
 
         story.append(KeepTogether(section[:2]))
         story.extend(section[2:])

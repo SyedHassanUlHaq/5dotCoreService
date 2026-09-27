@@ -18,6 +18,7 @@ class User(Base):
     scans_used_this_month = Column(Integer, nullable=False, default=0)
     plan_reset_date = Column(DateTime(timezone=True), nullable=True)
     accuracy_rate = Column(Float, nullable=False, default=94.2)
+    apple_sub = Column(String, unique=True, nullable=True, index=True)
     push_token = Column(String, nullable=True)   # Expo push token
     is_active = Column(Boolean, nullable=False, default=True)
     deactivated_at = Column(DateTime(timezone=True), nullable=True)

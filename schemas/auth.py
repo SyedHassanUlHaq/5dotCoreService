@@ -25,7 +25,8 @@ class GoogleAuthRequest(BaseModel):
 
 class AppleAuthRequest(BaseModel):
     identityToken: str
-    fullName: dict | None = None   # {"givenName": "...", "familyName": "..."}
+    authorizationCode: str | None = None
+    fullName: dict | None = None   # {"givenName": "...", "familyName": "..."} — only on first sign-in
 
 
 class FacebookAuthRequest(BaseModel):

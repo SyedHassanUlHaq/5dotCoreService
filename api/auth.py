@@ -180,7 +180,6 @@ def google_auth(payload: GoogleAuthRequest, db: Session = Depends(get_db)):
 @router.post("/apple")
 def apple_auth(payload: AppleAuthRequest, db: Session = Depends(get_db)):
     try:
-        # Fetch Apple JWKS
         jwks_resp = http_requests.get("https://appleid.apple.com/auth/keys", timeout=5)
         jwks = jwks_resp.json()
 
@@ -199,16 +198,56 @@ def apple_auth(payload: AppleAuthRequest, db: Session = Depends(get_db)):
     except Exception as e:
         raise AppError("UNAUTHORIZED", f"Invalid Apple token: {e}", 401)
 
-    email = info.get("email")
-    if not email:
-        raise AppError("UNAUTHORIZED", "Apple token did not include an email.", 401)
+    # `sub` is Apple's permanent stable user ID — use it as primary key, not email.
+    # Email can be a relay address (Hide My Email) and is only present in the JWT
+    # on the user's very first authorization; sub is always present.
+    apple_sub = info.get("sub")
+    if not apple_sub:
+        raise AppError("UNAUTHORIZED", "Apple token missing sub claim.", 401)
 
+    email = info.get("email") or None
+
+    # Name: only sent by Apple on the very first sign-in — capture it now or lose it.
     full_name = payload.fullName or {}
     given = full_name.get("givenName", "")
     family = full_name.get("familyName", "")
     name = f"{given} {family}".strip() or None
 
-    user = _get_or_create_oauth_user(db, email, name)
+    # Look up by stable Apple sub first; fall back to email for accounts created
+    # before this column was added, then backfill sub so future logins use it.
+    user = db.query(User).filter(User.apple_sub == apple_sub).first()
+
+    if not user and email:
+        user = db.query(User).filter(User.email == email).first()
+        if user and not user.apple_sub:
+            user.apple_sub = apple_sub
+            db.commit()
+
+    if user:
+        if name and not user.name:
+            user.name = name
+        if name and not user.first_name:
+            user.first_name = given or None
+            user.last_name = family or None
+        db.commit()
+    else:
+        if not email:
+            raise AppError("UNAUTHORIZED", "Apple did not provide an email for this new account.", 401)
+        user = User(
+            email=email,
+            apple_sub=apple_sub,
+            name=name,
+            first_name=given or None,
+            last_name=family or None,
+            hashed_password=None,
+        )
+        db.add(user)
+        db.commit()
+        db.refresh(user)
+
+    if not user.is_active:
+        raise AppError("ACCOUNT_DEACTIVATED", "This account has been deactivated.", 403)
+
     return _issue_tokens(user, db)
 
 

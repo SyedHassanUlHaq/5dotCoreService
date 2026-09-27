@@ -72,7 +72,17 @@ STATUS_PROGRESS = {
 # Helpers
 # ---------------------------------------------------------------------------
 
-def _check_quota(user: User):
+def _check_quota(user: User, db: Session):
+    now = datetime.now(timezone.utc)
+    reset = user.plan_reset_date
+    if reset is not None and reset.tzinfo is None:
+        reset = reset.replace(tzinfo=timezone.utc)
+    # Start a fresh 30-day window the first time (no reset date yet) and
+    # whenever the previous one has elapsed.
+    if reset is None or now >= reset:
+        user.scans_used_this_month = 0
+        user.plan_reset_date = now + timedelta(days=30)
+        db.commit()
     limit = PLAN_SCAN_LIMITS.get(user.plan)
     if limit is not None and user.scans_used_this_month >= limit:
         raise AppError("SCAN_LIMIT_REACHED", "Monthly scan quota exhausted.", 429)
@@ -347,7 +357,7 @@ async def create_detection_request(
     if not requested_types:
         raise AppError("VALIDATION_ERROR", "At least one detection type must be requested.", 422)
 
-    _check_quota(current_user)
+    _check_quota(current_user, db)
 
     if url:
         if not _is_supported_url(url):
@@ -368,6 +378,7 @@ async def create_detection_request(
             status="processing",
         )
         db.add(dr)
+        current_user.scans_used_this_month += 1
         db.commit()
         db.refresh(dr)
 
@@ -416,6 +427,7 @@ async def create_detection_request(
         status="processing",
     )
     db.add(dr)
+    current_user.scans_used_this_month += 1
     db.commit()
     db.refresh(dr)
 
