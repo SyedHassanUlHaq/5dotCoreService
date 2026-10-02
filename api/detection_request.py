@@ -12,7 +12,6 @@ from datetime import datetime, timezone, timedelta
 from urllib.parse import urlparse, unquote
 
 import requests
-import yt_dlp
 from fastapi import APIRouter, BackgroundTasks, Depends, UploadFile, File, Form, Query, Response
 from sqlalchemy.orm import Session
 
@@ -26,6 +25,7 @@ from utils.errors import AppError
 from utils.pdf_report import build_forensic_pdf
 from utils.s3 import upload_file
 from utils.sqs import enqueue_scan
+from utils.ytdl import _ytdl_download
 
 router = APIRouter()
 
@@ -242,45 +242,6 @@ def _process_upload(request_id: str, tmp_path: str, ext: str, requested_types: l
             enqueue_scan(request_id, t, s3_key=s3_key)
     finally:
         db.close()
-
-
-_YTDL_COOKIES_FILE = os.getenv("YTDL_COOKIES_FILE", "")
-
-_YTDL_BASE_OPTS = {
-    "quiet": True,
-    "no_warnings": False,
-    "socket_timeout": 30,
-    "retries": 5,
-    "fragment_retries": 5,
-    "http_headers": {
-        "User-Agent": (
-            "Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
-            "AppleWebKit/537.36 (KHTML, like Gecko) "
-            "Chrome/125.0.0.0 Safari/537.36"
-        ),
-    },
-    # android_vr client bypasses YouTube's "Sign in to confirm" bot check
-    "extractor_args": {
-        "youtube": {"player_client": ["android_vr", "web"]},
-    },
-}
-
-if _YTDL_COOKIES_FILE and os.path.exists(_YTDL_COOKIES_FILE):
-    _YTDL_BASE_OPTS["cookiefile"] = _YTDL_COOKIES_FILE
-
-
-def _ytdl_download(url: str, out_path: str) -> dict:
-    """Download url to out_path, return info dict. Raises on failure."""
-    opts = {
-        **_YTDL_BASE_OPTS,
-        "outtmpl": out_path,
-        # prefer a direct mp4 stream; fall back to merging best video+audio
-        "format": "bestvideo[ext=mp4][height<=1080]+bestaudio[ext=m4a]/bestvideo[ext=mp4]+bestaudio/best[ext=mp4]/best",
-        "merge_output_format": "mp4",
-        "postprocessors": [{"key": "FFmpegVideoConvertor", "preferedformat": "mp4"}],
-    }
-    with yt_dlp.YoutubeDL(opts) as ydl:
-        return ydl.extract_info(url, download=True) or {}
 
 
 def _process_url(request_id: str, url: str, requested_types: list[str]):

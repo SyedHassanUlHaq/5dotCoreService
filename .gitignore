@@ -10,3 +10,7 @@ env/
 .env
 global-bundle.pem
 alembic/versions/*
+5dot_env/
+.expo
+.claude/
+.vscode/
