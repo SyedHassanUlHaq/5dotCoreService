@@ -255,15 +255,22 @@ def _process_url(request_id: str, url: str, requested_types: list[str]):
             _fail(db, rid, requested_types, f"Could not download video: {e}")
             return
 
-        duration = info.get("duration")
-        if duration and duration > MAX_DURATION_SECONDS:
-            _fail(db, rid, requested_types, f"Video exceeds the {MAX_DURATION_SECONDS // 60} minute limit.")
-            return
-
         # yt-dlp may append .mp4 or change the extension
         actual_path = tmp_path if os.path.exists(tmp_path) else f"{tmp_path}.mp4"
         if not os.path.exists(actual_path):
             _fail(db, rid, requested_types, "Download produced no output file.")
+            return
+
+        # Extractor duration metadata can be missing or inaccurate (notably
+        # for social-media URLs). Probe the actual downloaded media, matching
+        # the direct-upload path, so chunk creation gets the real duration.
+        try:
+            duration = _probe_duration(actual_path)
+        except Exception as e:
+            _fail(db, rid, requested_types, f"Could not read downloaded video duration: {e}")
+            return
+        if duration > MAX_DURATION_SECONDS:
+            _fail(db, rid, requested_types, f"Video exceeds the {MAX_DURATION_SECONDS // 60} minute limit.")
             return
 
         s3_key = f"clips/{request_id}.mp4"
