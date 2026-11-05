@@ -82,7 +82,7 @@ DEFAULT_DETECTION_THRESHOLD: dict[str, float] = {
 
 # --- Plan limits ---
 PLAN_SCAN_LIMITS: dict[str, int | None] = {
-    "free": 50,
+    "free": 20,
     "pro": 500,
     "team": None,   # unlimited
 }

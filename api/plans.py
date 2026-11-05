@@ -9,7 +9,7 @@ _PLANS = [
         "price": 0,
         "currency": "USD",
         "billingPeriod": "forever",
-        "scansPerMonth": 50,
+        "scansPerMonth": 20,
         "features": [
             "Audio + video AI detection",
             "Up to 125 MB per file",
