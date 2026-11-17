@@ -35,6 +35,14 @@ AWS_REGION = os.getenv("AWS_REGION", "us-east-1")
 AWS_BUCKET_NAME = os.getenv("AWS_BUCKET_NAME", "5dot-storage")
 CDN_BASE_URL = os.getenv("CDN_BASE_URL", "")  # optional CloudFront domain
 
+# FlashData delivers YouTube downloads directly into S3. Dedicated credentials
+# can be supplied; by default the existing app S3 credentials are reused.
+FLASHDATA_API_KEY = os.getenv("FLASHDATA_API_KEY")
+FLASHDATA_S3_ACCESS_KEY = os.getenv("FLASHDATA_S3_ACCESS_KEY", AWS_ACCESS_KEY_ID)
+FLASHDATA_S3_SECRET_KEY = os.getenv("FLASHDATA_S3_SECRET_KEY", AWS_SECRET_ACCESS_KEY)
+FLASHDATA_S3_BUCKET = AWS_BUCKET_NAME
+FLASHDATA_S3_REGION = AWS_REGION
+
 # --- Stripe ---
 STRIPE_SECRET_KEY = os.getenv("STRIPE_SECRET_KEY")
 STRIPE_WEBHOOK_SECRET = os.getenv("STRIPE_WEBHOOK_SECRET")

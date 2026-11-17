@@ -9,13 +9,21 @@ import subprocess
 import tempfile
 import uuid
 from datetime import datetime, timezone, timedelta
-from urllib.parse import urlparse, unquote
+from urllib.parse import parse_qs, unquote, urlparse
 
 import requests
 from fastapi import APIRouter, BackgroundTasks, Depends, UploadFile, File, Form, Query, Response
 from sqlalchemy.orm import Session
 
-from config.project_config import PLAN_SCAN_LIMITS, YOUTUBE_API_KEY
+from config.project_config import (
+    FLASHDATA_API_KEY,
+    FLASHDATA_S3_ACCESS_KEY,
+    FLASHDATA_S3_BUCKET,
+    FLASHDATA_S3_REGION,
+    FLASHDATA_S3_SECRET_KEY,
+    PLAN_SCAN_LIMITS,
+    YOUTUBE_API_KEY,
+)
 from database import SessionLocal, get_db
 from models.chunk import Chunk
 from models.detection_request import DetectionRequest
@@ -23,7 +31,7 @@ from models.user import User
 from utils.deps import get_current_user
 from utils.errors import AppError
 from utils.pdf_report import build_forensic_pdf
-from utils.s3 import upload_file
+from utils.s3 import delete_file, presigned_url, upload_file
 from utils.sqs import enqueue_scan
 from utils.ytdl import _ytdl_download
 
@@ -116,6 +124,96 @@ def _probe_duration(path: str) -> float:
         return float(out.stdout.strip())
     except Exception:
         raise AppError("VALIDATION_ERROR", "Could not read media duration.", 422)
+
+
+def _youtube_video_id(url: str) -> str | None:
+    """Return an 11-character YouTube video ID, or None for other URLs."""
+    parsed = urlparse(url)
+    host = (parsed.hostname or "").lower()
+    if host not in {"youtube.com", "www.youtube.com", "m.youtube.com", "youtu.be", "www.youtu.be"}:
+        return None
+
+    if host.endswith("youtu.be"):
+        video_id = parsed.path.strip("/").split("/", 1)[0]
+    elif parsed.path == "/watch":
+        video_id = parse_qs(parsed.query).get("v", [""])[0]
+    else:
+        parts = [part for part in parsed.path.split("/") if part]
+        video_id = parts[1] if len(parts) >= 2 and parts[0] in {"shorts", "live", "embed", "v"} else ""
+
+    return video_id if len(video_id) == 11 else None
+
+
+def _flashdata_s3_key(file_url: str, bucket: str, expected_prefix: str) -> str:
+    """Extract and validate the S3 object key from FlashData's delivery URL."""
+    parsed = urlparse(file_url)
+    host = (parsed.hostname or "").lower()
+    path = unquote(parsed.path).lstrip("/")
+
+    if parsed.scheme == "s3":
+        if parsed.netloc != bucket:
+            raise ValueError("FlashData delivered the video to an unexpected S3 bucket.")
+        key = path
+    elif host == f"{bucket}.s3.amazonaws.com" or host.startswith(f"{bucket}.s3."):
+        key = path
+    elif host == "s3.amazonaws.com" or host.startswith("s3."):
+        bucket_prefix = f"{bucket}/"
+        if not path.startswith(bucket_prefix):
+            raise ValueError("FlashData delivery URL does not point to the configured S3 bucket.")
+        key = path[len(bucket_prefix):]
+    else:
+        raise ValueError("FlashData returned an unrecognized S3 delivery URL.")
+
+    if not key.startswith(f"{expected_prefix}/"):
+        raise ValueError("FlashData delivered the video outside the expected S3 prefix.")
+    return key
+
+
+def _flashdata_download_to_s3(url: str, request_id: str) -> tuple[str, dict]:
+    """Ask FlashData to download a YouTube video straight into our S3 bucket."""
+    if not FLASHDATA_API_KEY:
+        raise RuntimeError("FLASHDATA_API_KEY is not configured.")
+    if not FLASHDATA_S3_ACCESS_KEY or not FLASHDATA_S3_SECRET_KEY:
+        raise RuntimeError("FlashData S3 credentials are not configured.")
+
+    video_id = _youtube_video_id(url)
+    if not video_id:
+        raise ValueError("Could not extract a YouTube video ID from the URL.")
+
+    from flashdata import FlashData
+
+    object_prefix = f"clips/{request_id}"
+    storage = {
+        "storage_type": "s3",
+        "storage_url": FLASHDATA_S3_BUCKET,
+        "object_prefix": object_prefix,
+        "region": FLASHDATA_S3_REGION,
+        "access_key": FLASHDATA_S3_ACCESS_KEY,
+        "secret_key": FLASHDATA_S3_SECRET_KEY,
+    }
+
+    with FlashData(api_key=FLASHDATA_API_KEY) as client:
+        job = client.youtube.download(
+            video_id,
+            storage=storage,
+            output_format="mp4",
+            video_quality="<=720",
+        )
+        job_id = job.get("id")
+        if not job_id:
+            raise RuntimeError("FlashData accepted no job ID for the YouTube download.")
+        client.jobs.wait(job_id, timeout=600)
+        delivery = client.jobs.result(job_id)
+
+    results = delivery.get("results") or []
+    if not results:
+        raise RuntimeError("FlashData completed the job without returning a delivered video.")
+    media = results[0]
+    file_url = media.get("file_url")
+    if not file_url:
+        raise RuntimeError("FlashData result is missing the delivered S3 file URL.")
+    s3_key = _flashdata_s3_key(file_url, FLASHDATA_S3_BUCKET, object_prefix)
+    return s3_key, media
 
 
 def _requested_types(detect_ai_audio: bool, detect_ai_video: bool, detect_lipsync: bool, detect_changes: bool) -> list[str]:
@@ -249,35 +347,66 @@ def _process_url(request_id: str, url: str, requested_types: list[str]):
     rid = uuid.UUID(request_id)
     tmp_path = tempfile.mktemp(suffix=".mp4")
     try:
-        try:
-            info = _ytdl_download(url, tmp_path)
-        except Exception as e:
-            _fail(db, rid, requested_types, f"Could not download video: {e}")
-            return
+        youtube_id = _youtube_video_id(url)
+        if youtube_id:
+            try:
+                s3_key, media = _flashdata_download_to_s3(url, request_id)
+            except Exception as e:
+                _fail(db, rid, requested_types, f"Could not download YouTube video through FlashData: {e}")
+                return
 
-        # yt-dlp may append .mp4 or change the extension
-        actual_path = tmp_path if os.path.exists(tmp_path) else f"{tmp_path}.mp4"
-        if not os.path.exists(actual_path):
-            _fail(db, rid, requested_types, "Download produced no output file.")
-            return
+            duration = media.get("duration")
+            if duration is None:
+                # FlashData's duration can be null for some media. Probe the
+                # private object through a short-lived S3 URL without pulling
+                # the full file back onto this service.
+                try:
+                    duration = _probe_duration(presigned_url(s3_key))
+                except Exception as e:
+                    _fail(db, rid, requested_types, f"Could not read downloaded video duration: {e}")
+                    return
+            try:
+                duration = float(duration)
+            except (TypeError, ValueError):
+                _fail(db, rid, requested_types, "FlashData returned an invalid video duration.")
+                return
+            title = media.get("title") or youtube_id
+        else:
+            try:
+                info = _ytdl_download(url, tmp_path)
+            except Exception as e:
+                _fail(db, rid, requested_types, f"Could not download video: {e}")
+                return
 
-        # Extractor duration metadata can be missing or inaccurate (notably
-        # for social-media URLs). Probe the actual downloaded media, matching
-        # the direct-upload path, so chunk creation gets the real duration.
-        try:
-            duration = _probe_duration(actual_path)
-        except Exception as e:
-            _fail(db, rid, requested_types, f"Could not read downloaded video duration: {e}")
+            # yt-dlp may append .mp4 or change the extension
+            actual_path = tmp_path if os.path.exists(tmp_path) else f"{tmp_path}.mp4"
+            if not os.path.exists(actual_path):
+                _fail(db, rid, requested_types, "Download produced no output file.")
+                return
+
+            # Probe the actual downloaded media, not extractor metadata, so
+            # chunk creation uses the real duration.
+            try:
+                duration = _probe_duration(actual_path)
+            except Exception as e:
+                _fail(db, rid, requested_types, f"Could not read downloaded video duration: {e}")
+                return
+
+            s3_key = f"clips/{request_id}.mp4"
+            try:
+                upload_file(actual_path, s3_key, "video/mp4")
+            except Exception as e:
+                _fail(db, rid, requested_types, f"Upload failed: {e}")
+                return
+            title = info.get("title")
+
+        if duration <= 0:
+            _fail(db, rid, requested_types, "Could not determine a valid video duration.")
             return
         if duration > MAX_DURATION_SECONDS:
+            if youtube_id:
+                delete_file(s3_key)
             _fail(db, rid, requested_types, f"Video exceeds the {MAX_DURATION_SECONDS // 60} minute limit.")
-            return
-
-        s3_key = f"clips/{request_id}.mp4"
-        try:
-            upload_file(actual_path, s3_key, "video/mp4")
-        except Exception as e:
-            _fail(db, rid, requested_types, f"Upload failed: {e}")
             return
 
         dr = db.query(DetectionRequest).filter(DetectionRequest.id == rid).first()
@@ -285,8 +414,8 @@ def _process_url(request_id: str, url: str, requested_types: list[str]):
             return
         dr.file_key = s3_key
         dr.duration = duration
-        if info.get("title"):
-            dr.filename = info["title"]
+        if title:
+            dr.filename = title
         for t in requested_types:
             setattr(dr, STATUS_FIELD_BY_TYPE[t], "queued")
         db.commit()
