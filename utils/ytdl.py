@@ -32,7 +32,13 @@ def _ytdl_download(url: str, out_path: str, proxy: str | None = None) -> dict:
     opts = {
         **_YTDL_BASE_OPTS,
         "outtmpl": out_path,
-        "format": "bestvideo[ext=mp4][height<=1080]+bestaudio[ext=m4a]/bestvideo[ext=mp4]+bestaudio/best[ext=mp4]/best",
+        "format": (
+            "bestvideo[vcodec^=avc][ext=mp4][height<=1080]+bestaudio[ext=m4a]"
+            "/bestvideo[vcodec^=avc][height<=1080]+bestaudio"
+            "/bestvideo[ext=mp4][height<=1080]+bestaudio[ext=m4a]"
+            "/bestvideo[ext=mp4]+bestaudio"
+            "/best[ext=mp4]/best"
+        ),
         "merge_output_format": "mp4",
         "postprocessors": [{"key": "FFmpegVideoConvertor", "preferedformat": "mp4"}],
     }

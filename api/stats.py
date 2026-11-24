@@ -45,11 +45,11 @@ def weekly_stats(
         .count()
     )
 
-    total_scans = user_scans.count()
-    flagged = user_scans.filter(
-        (DetectionRequest.overall_ai_video_score > 0.5) |
-        (DetectionRequest.overall_ai_audio_score > 0.5)
-    ).count()
+    total_scans = len(this_week)
+    flagged = sum(
+        1 for s in this_week
+        if (s.overall_ai_video_score or 0) > 0.5 or (s.overall_ai_audio_score or 0) > 0.5
+    )
 
     # Daily breakdown Mon–Sun of current week
     day_names = ["Mon", "Tue", "Wed", "Thu", "Fri", "Sat", "Sun"]

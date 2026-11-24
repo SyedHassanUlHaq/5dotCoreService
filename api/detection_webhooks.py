@@ -54,9 +54,7 @@ def _derive_result_from_chunks(db: Session, dr: DetectionRequest, detection_type
     already wrote to detection_chunks are still real, so build a result from
     those instead of showing nothing.
 
-    Uses the peak (max) segment score, not an average: for a forensic flag,
-    one strong incriminating segment should drive the verdict, not get
-    diluted by a long clean stretch either side of it.
+    Uses the mean segment score across all chunks.
     """
     field = CHUNK_RESULT_FIELD.get(detection_type)
     if not field:
@@ -65,7 +63,7 @@ def _derive_result_from_chunks(db: Session, dr: DetectionRequest, detection_type
     scores = [v for c in chunks if (v := getattr(c, field, None)) is not None]
     if not scores:
         return None
-    return {"score": max(scores), "threshold": DEFAULT_DETECTION_THRESHOLD.get(detection_type, 0.5)}
+    return {"score": sum(scores) / len(scores), "threshold": DEFAULT_DETECTION_THRESHOLD.get(detection_type, 0.5)}
 
 
 def _set_result(dr: DetectionRequest, detection_type: str, result: dict):
