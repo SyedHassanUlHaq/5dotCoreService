@@ -35,7 +35,7 @@ router = APIRouter()
 
 ALLOWED_EXTENSIONS = {".mp4", ".mov", ".wav", ".m4a", ".mp3", ".opus"}
 MAX_FILE_BYTES = 250 * 1024 * 512  # 125 MB
-MAX_DURATION_SECONDS = 5 * 60      # 5 minutes
+MAX_DURATION_SECONDS = 15 * 60      # 5 minutes
 
 ALLOWED_URL_HOSTS = {
     "youtube.com", "www.youtube.com", "m.youtube.com", "youtu.be",
