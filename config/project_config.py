@@ -35,6 +35,8 @@ AWS_REGION = os.getenv("AWS_REGION", "us-east-1")
 AWS_BUCKET_NAME = os.getenv("AWS_BUCKET_NAME", "5dot-storage")
 CDN_BASE_URL = os.getenv("CDN_BASE_URL", "")  # optional CloudFront domain
 
+RAPIDAPI_KEY = os.getenv("RAPIDAPI_KEY")
+
 # --- Stripe ---
 STRIPE_SECRET_KEY = os.getenv("STRIPE_SECRET_KEY")
 STRIPE_WEBHOOK_SECRET = os.getenv("STRIPE_WEBHOOK_SECRET")

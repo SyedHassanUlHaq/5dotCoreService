@@ -9,13 +9,17 @@ import subprocess
 import tempfile
 import uuid
 from datetime import datetime, timezone, timedelta
-from urllib.parse import urlparse, unquote
+from urllib.parse import parse_qs, unquote, urlparse
 
 import requests
 from fastapi import APIRouter, BackgroundTasks, Depends, UploadFile, File, Form, Query, Response
 from sqlalchemy.orm import Session
 
-from config.project_config import PLAN_SCAN_LIMITS, YOUTUBE_API_KEY
+from config.project_config import (
+    PLAN_SCAN_LIMITS,
+    RAPIDAPI_KEY,
+    YOUTUBE_API_KEY,
+)
 from database import SessionLocal, get_db
 from models.chunk import Chunk
 from models.detection_request import DetectionRequest
@@ -116,6 +120,90 @@ def _probe_duration(path: str) -> float:
         return float(out.stdout.strip())
     except Exception:
         raise AppError("VALIDATION_ERROR", "Could not read media duration.", 422)
+
+
+def _youtube_video_id(url: str) -> str | None:
+    """Return an 11-character YouTube video ID, or None for other URLs."""
+    parsed = urlparse(url)
+    host = (parsed.hostname or "").lower()
+    if host not in {"youtube.com", "www.youtube.com", "m.youtube.com", "youtu.be", "www.youtu.be"}:
+        return None
+
+    if host.endswith("youtu.be"):
+        video_id = parsed.path.strip("/").split("/", 1)[0]
+    elif parsed.path == "/watch":
+        video_id = parse_qs(parsed.query).get("v", [""])[0]
+    else:
+        parts = [part for part in parsed.path.split("/") if part]
+        video_id = parts[1] if len(parts) >= 2 and parts[0] in {"shorts", "live", "embed", "v"} else ""
+
+    return video_id if len(video_id) == 11 else None
+
+
+def _rapidapi_youtube_download(url: str, out_path: str, video_id: str) -> dict:
+    """Download a YouTube URL through RapidAPI, trying 480p before 240p."""
+    if not RAPIDAPI_KEY:
+        raise RuntimeError("RAPIDAPI_KEY is not configured.")
+
+    endpoint = "https://instagram-downloader-download-instagram-videos-stories1.p.rapidapi.com/youtube/download"
+    headers = {
+        "x-rapidapi-key": RAPIDAPI_KEY,
+        "x-rapidapi-host": "instagram-downloader-download-instagram-videos-stories1.p.rapidapi.com",
+        "Content-Type": "application/json",
+    }
+    failures = []
+
+    for quality in ("480p", "240p"):
+        try:
+            response = requests.post(
+                endpoint,
+                json={"url": url, "format": quality},
+                headers=headers,
+                timeout=(10, 45),
+            )
+            if not response.ok:
+                failures.append(f"{quality}: API returned HTTP {response.status_code}")
+                continue
+
+            download_url = response.json().get("download_url")
+            if not isinstance(download_url, str) or not download_url.startswith("https://"):
+                failures.append(f"{quality}: API response had no HTTPS download_url")
+                continue
+
+            with requests.get(download_url, stream=True, timeout=(10, 60)) as media_response:
+                if not media_response.ok:
+                    failures.append(f"{quality}: media server returned HTTP {media_response.status_code}")
+                    continue
+
+                downloaded = 0
+                with open(out_path, "wb") as output:
+                    for block in media_response.iter_content(chunk_size=1024 * 1024):
+                        if not block:
+                            continue
+                        downloaded += len(block)
+                        if downloaded > MAX_FILE_BYTES:
+                            raise ValueError("download exceeds the 125 MB file limit")
+                        output.write(block)
+
+            if downloaded == 0:
+                failures.append(f"{quality}: media server returned an empty file")
+                continue
+
+            try:
+                duration = _probe_duration(out_path)
+            except Exception:
+                failures.append(f"{quality}: downloaded file was not readable media")
+                continue
+
+            return {"title": video_id, "duration": duration, "format": quality}
+        except Exception as exc:
+            if os.path.exists(out_path):
+                os.remove(out_path)
+            failures.append(f"{quality}: {type(exc).__name__}")
+
+    if os.path.exists(out_path):
+        os.remove(out_path)
+    raise RuntimeError("RapidAPI download failed at 480p and 240p (" + "; ".join(failures) + ").")
 
 
 def _requested_types(detect_ai_audio: bool, detect_ai_video: bool, detect_lipsync: bool, detect_changes: bool) -> list[str]:
@@ -249,25 +337,40 @@ def _process_url(request_id: str, url: str, requested_types: list[str]):
     rid = uuid.UUID(request_id)
     tmp_path = tempfile.mktemp(suffix=".mp4")
     try:
-        try:
-            info = _ytdl_download(url, tmp_path)
-        except Exception as e:
-            _fail(db, rid, requested_types, f"Could not download video: {e}")
-            return
+        youtube_id = _youtube_video_id(url)
+        if youtube_id:
+            try:
+                info = _rapidapi_youtube_download(url, tmp_path, youtube_id)
+            except Exception as e:
+                _fail(db, rid, requested_types, f"Could not download YouTube video through RapidAPI: {e}")
+                return
+            actual_path = tmp_path
+            duration = info["duration"]
+            title = youtube_id
+        else:
+            try:
+                info = _ytdl_download(url, tmp_path)
+            except Exception as e:
+                _fail(db, rid, requested_types, f"Could not download video: {e}")
+                return
 
-        # yt-dlp may append .mp4 or change the extension
-        actual_path = tmp_path if os.path.exists(tmp_path) else f"{tmp_path}.mp4"
-        if not os.path.exists(actual_path):
-            _fail(db, rid, requested_types, "Download produced no output file.")
-            return
+            # yt-dlp may append .mp4 or change the extension
+            actual_path = tmp_path if os.path.exists(tmp_path) else f"{tmp_path}.mp4"
+            if not os.path.exists(actual_path):
+                _fail(db, rid, requested_types, "Download produced no output file.")
+                return
 
-        # Extractor duration metadata can be missing or inaccurate (notably
-        # for social-media URLs). Probe the actual downloaded media, matching
-        # the direct-upload path, so chunk creation gets the real duration.
-        try:
-            duration = _probe_duration(actual_path)
-        except Exception as e:
-            _fail(db, rid, requested_types, f"Could not read downloaded video duration: {e}")
+            # Probe the actual downloaded media, not extractor metadata, so
+            # chunk creation uses the real duration.
+            try:
+                duration = _probe_duration(actual_path)
+            except Exception as e:
+                _fail(db, rid, requested_types, f"Could not read downloaded video duration: {e}")
+                return
+            title = info.get("title")
+
+        if duration <= 0:
+            _fail(db, rid, requested_types, "Could not determine a valid video duration.")
             return
         if duration > MAX_DURATION_SECONDS:
             _fail(db, rid, requested_types, f"Video exceeds the {MAX_DURATION_SECONDS // 60} minute limit.")
@@ -285,8 +388,8 @@ def _process_url(request_id: str, url: str, requested_types: list[str]):
             return
         dr.file_key = s3_key
         dr.duration = duration
-        if info.get("title"):
-            dr.filename = info["title"]
+        if title:
+            dr.filename = title
         for t in requested_types:
             setattr(dr, STATUS_FIELD_BY_TYPE[t], "queued")
         db.commit()

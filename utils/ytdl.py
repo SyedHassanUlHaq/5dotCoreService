@@ -27,7 +27,7 @@ if _YTDL_COOKIES_FILE and os.path.exists(_YTDL_COOKIES_FILE):
     _YTDL_BASE_OPTS["cookiefile"] = _YTDL_COOKIES_FILE
 
 
-def _ytdl_download(url: str, out_path: str) -> dict:
+def _ytdl_download(url: str, out_path: str, proxy: str | None = None) -> dict:
     """Download url to out_path, return info dict. Raises on failure."""
     opts = {
         **_YTDL_BASE_OPTS,
@@ -42,5 +42,7 @@ def _ytdl_download(url: str, out_path: str) -> dict:
         "merge_output_format": "mp4",
         "postprocessors": [{"key": "FFmpegVideoConvertor", "preferedformat": "mp4"}],
     }
+    if proxy:
+        opts["proxy"] = proxy
     with yt_dlp.YoutubeDL(opts) as ydl:
         return ydl.extract_info(url, download=True) or {}
